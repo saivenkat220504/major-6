@@ -8,11 +8,9 @@ import luggageRoutes from './routes/luggage';
 import emergencyRoutes from './routes/emergency';
 import supportRoutes from './routes/support';
 import auraRoutes from './routes/aura';
-import busRoutes from './routes/busRoutes';
 import baggageRoutes from './routes/baggage';
 import transitServicesRoutes from './routes/transitServicesRoutes';
 import metroTrackingRoutes from './routes/metroTracking';
-import airportBusRoutes from './routes/airportBusRoutes';
 import guardianRoutes from './routes/guardian';
 import https from 'https';
 import { createServer } from 'http';
@@ -32,11 +30,9 @@ app.use('/api/luggage', luggageRoutes);
 app.use('/api/emergency-alert', emergencyRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/aura', auraRoutes);
-app.use('/api/bus-service', busRoutes);
 app.use('/api/transit-services', transitServicesRoutes);
 app.use('/api/baggage', baggageRoutes);
 app.use('/api/metro-tracking', metroTrackingRoutes);
-app.use('/api/airport-bus', airportBusRoutes);
 app.use('/api/guardian', guardianRoutes);
 
 app.get('/api/tts', (req, res) => {

@@ -7,7 +7,6 @@ import ChatPage from '../../features/ai-assistant/pages/Chat'
 import FlightTrackingPage from '../../features/flight-tracking/pages/FlightTrackingPage'
 import BaggageGuidancePage from '../../features/baggage-guidance/pages/BaggageGuidancePage'
 import TranslatePage from '../../features/translation/pages/Translate'
-import SafetyPage from '../../features/women-safety/pages/Safety'
 import ProfilePage from '../../pages/Profile'
 import BoardingPassPage from '../../features/boarding-pass/pages/BoardingPassPage'
 import EmergencyContactPage from '../../features/emergency-contact/pages/EmergencyContactPage'
@@ -35,7 +34,6 @@ export default function AppRoutes(){
       <Route path='/navigation' element={<HeathrowMapPage/>} />
       <Route path='/navigate' element={<HeathrowMapPage/>} />
       <Route path='/translate' element={<TranslatePage/>} />
-      <Route path='/safety' element={<SafetyPage/>} />
       <Route path='/profile' element={<ProfilePage/>} />
       <Route path='/boarding-pass' element={<BoardingPassPage/>} />
       <Route path='/emergency-contact' element={<EmergencyContactPage/>} />
@@ -43,8 +41,6 @@ export default function AppRoutes(){
       <Route path='/meal-delivery' element={<MealDeliveryPage/>} />
       <Route path='/transit-services' element={<TransitServicesPage/>} />
       <Route path='/transit-services/track' element={<LiveTrackingPage/>} />
-      <Route path='/bus-service' element={<TransitServicesPage/>} />
-      <Route path='/bus-service/track' element={<LiveTrackingPage/>} />
       <Route path='/heathrow-map' element={<HeathrowMapPage/>} />
       <Route path='/personal-guardian' element={<PersonalGuardianPage/>} />
       <Route path='/personal-mentor' element={<PersonalGuardianPage/>} />
