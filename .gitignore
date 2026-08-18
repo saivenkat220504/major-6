@@ -20,6 +20,7 @@ server/dist/
 .env.production.local
 
 # Database
+server/dev.db
 server/prisma/*.db
 server/prisma/*.db-journal
 

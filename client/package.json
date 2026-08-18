@@ -9,7 +9,6 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@zxing/browser": "^0.2.1",
     "@zxing/library": "^0.21.3",
     "axios": "1.4.0",
     "clsx": "^2.1.1",

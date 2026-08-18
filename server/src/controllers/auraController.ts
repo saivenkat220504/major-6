@@ -13,7 +13,7 @@ function getClient(): OpenAI {
       apiKey: key,
       baseURL: 'https://openrouter.ai/api/v1',
       defaultHeaders: {
-        'HTTP-Referer': 'http://localhost:3000',
+        'HTTP-Referer': process.env.FRONTEND_URL || process.env.APP_URL || 'http://localhost:3000',
         'X-Title': 'Airport Aura Assistant',
       },
     });

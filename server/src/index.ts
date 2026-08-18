@@ -50,7 +50,7 @@ app.get('/api/tts', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 4000;
+const PORT = Number(process.env.PORT) || 4000;
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -128,6 +128,6 @@ startTelegramLongPolling(
   },
 );
 
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on ${PORT}`);
 });

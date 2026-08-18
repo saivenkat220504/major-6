@@ -15,8 +15,6 @@ import {
   CalendarCheck,
   Sparkles,
 } from 'lucide-react'
-import Header from '../../home/components/Header'
-import BottomNavigation from '../../home/components/BottomNavigation'
 import {
   addEvent,
   deleteEvent,
@@ -255,9 +253,7 @@ export default function EventSchedulerPage() {
   // ── render ────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-[#06121F] flex flex-col">
-      <Header />
-
-      <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-6 pb-28 space-y-6">
+      <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-2 pb-8 space-y-6">
 
         {/* ── Page title ── */}
         <div className="flex items-center gap-3">
@@ -478,8 +474,6 @@ export default function EventSchedulerPage() {
         </AnimatePresence>
 
       </main>
-
-      <BottomNavigation />
     </div>
   )
 }

@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import Header from '../../home/components/Header';
-import BottomNavigation from '../../home/components/BottomNavigation';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   ShieldCheck,
@@ -338,10 +336,8 @@ export default function PersonalGuardianPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 pb-24 transition-colors duration-200">
-      <Header title="Personal Guardian" />
-
-      <main className="max-w-4xl mx-auto px-4 pt-6">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 transition-colors duration-200">
+      <main className="max-w-4xl mx-auto px-4 pt-2">
         {/* Banner Section */}
         <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 rounded-3xl p-6 md:p-8 text-white shadow-xl shadow-indigo-500/10 mb-8 relative overflow-hidden">
           <div className="absolute right-0 top-0 w-96 h-96 bg-white/10 rounded-full blur-3xl -mr-20 -mt-20 pointer-events-none" />
@@ -719,8 +715,6 @@ export default function PersonalGuardianPage() {
           )}
         </div>
       </main>
-
-      <BottomNavigation activeTab="home" />
     </div>
   );
 }
