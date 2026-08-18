@@ -1,42 +1,37 @@
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 
 export interface DynamicSmtpCredentials {
   smtpUser: string;
   smtpAppPassword: string;
 }
 
-/**
- * Creates a dynamic Nodemailer transporter using the guardian's custom Gmail SMTP credentials.
- */
+function getResendConfig() {
+  const apiKey = process.env.RESEND_API_KEY;
+  const fromEmail = process.env.RESEND_FROM_EMAIL;
 
-export function createDynamicTransporter(creds: DynamicSmtpCredentials) {
-  const { smtpUser, smtpAppPassword } = creds;
-
-  if (!smtpUser || !smtpAppPassword) {
-    throw new Error('Guardian Gmail SMTP credentials (user & app password) are required.');
+  if (!apiKey) {
+    throw new Error('Resend API email configuration is missing: RESEND_API_KEY is required.');
   }
 
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: smtpUser,
-      pass: smtpAppPassword,
-    },
-  });
+  if (!fromEmail) {
+    throw new Error('Resend API email configuration is missing: RESEND_FROM_EMAIL is required.');
+  }
+
+  return { resend: new Resend(apiKey), fromEmail };
 }
 
 /**
- * Dispatches a 6-digit OTP verification code using the guardian's dynamic SMTP configuration.
+ * Dispatches a 6-digit OTP verification code using Resend's HTTPS email API.
  */
 export async function sendGuardianOtpEmail(
   toEmail: string,
   otp: string,
-  creds: DynamicSmtpCredentials
+  _creds: DynamicSmtpCredentials
 ): Promise<boolean> {
-  const transporter = createDynamicTransporter(creds);
+  const { resend, fromEmail } = getResendConfig();
 
   const mailOptions = {
-    from: `"Personal Guardian Verification" <${creds.smtpUser}>`,
+    from: `"Personal Guardian Verification" <${fromEmail}>`,
     to: toEmail,
     subject: 'Personal Guardian Verification Code',
     text: `Hello,
@@ -56,28 +51,32 @@ Personal Guardian System`,
   };
 
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log('[Mailer] OTP email sent dynamically to %s, messageId: %s', toEmail, info.messageId);
+    const { data, error } = await resend.emails.send(mailOptions);
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    console.log('[Mailer] OTP email sent through Resend to %s, messageId: %s', toEmail, data?.id);
     return true;
   } catch (err: any) {
-    console.error('[Mailer] Dynamic OTP email dispatch failed:', err?.message || err);
-    throw new Error(`Gmail SMTP Authentication Failed: ${err?.message || 'Invalid App Password'}`);
+    console.error('[Mailer] Resend OTP email dispatch failed:', err?.message || err);
+    throw new Error(`Resend API email dispatch failed: ${err?.message || 'Unknown email API error'}`);
   }
 }
 
 /**
- * Dispatches notification/progress updates using the guardian's dynamic SMTP configuration.
+ * Dispatches notification/progress updates using Resend's HTTPS email API.
  */
 export async function sendGuardianNotificationEmail(
   toEmail: string,
   subject: string,
   text: string,
-  creds: DynamicSmtpCredentials
+  _creds: DynamicSmtpCredentials
 ): Promise<boolean> {
-  const transporter = createDynamicTransporter(creds);
+  const { resend, fromEmail } = getResendConfig();
 
   const mailOptions = {
-    from: `"Airport Assistance Navigation" <${creds.smtpUser}>`,
+    from: `"Airport Assistance Navigation" <${fromEmail}>`,
     to: toEmail,
     subject,
     text: `Hello,
@@ -89,11 +88,15 @@ Smart Airport Navigation System`,
   };
 
   try {
-    const info = await transporter.sendMail(mailOptions);
-    console.log('[Mailer] Dynamic notification email sent successfully to %s, messageId: %s', toEmail, info.messageId);
+    const { data, error } = await resend.emails.send(mailOptions);
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    console.log('[Mailer] Resend notification email sent successfully to %s, messageId: %s', toEmail, data?.id);
     return true;
   } catch (err: any) {
-    console.error('[Mailer] Dynamic notification dispatch failed:', err?.message || err);
-    throw err;
+    console.error('[Mailer] Resend notification email dispatch failed:', err?.message || err);
+    throw new Error(`Resend API email dispatch failed: ${err?.message || 'Unknown email API error'}`);
   }
 }

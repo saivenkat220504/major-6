@@ -19,7 +19,7 @@ export function encryptPassword(text: string): string {
 }
 
 /**
- * Decrypts stored encrypted password for Nodemailer transporter authentication.
+ * Decrypts the stored Guardian configuration value for compatibility with existing records.
  */
 export function decryptPassword(encryptedText: string): string {
   if (!encryptedText) return '';
