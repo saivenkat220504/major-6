@@ -315,7 +315,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                         </div>
                         <h4 className="text-xl font-black text-white">Metro Connectivity Available</h4>
                         <p className="text-sm font-bold text-blue-300 mt-0.5">
-                          {result.officialSystemName || result.metroNetwork?.name || `${selectedAirport.city} Airport Metro`}
+                          {result.officialSystemName || result.metroNetwork?.name || 'Not available'}
                         </p>
                       </div>
                     </div>
@@ -387,11 +387,11 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                       </div>
 
                       <h5 className="text-base font-extrabold text-white flex items-center gap-2">
-                        <span>{result.officialApp?.name || `${result.officialSystemName || selectedAirport.city} Metro App`}</span>
+                        <span>{result.officialApp?.name || 'No app available'}</span>
                       </h5>
 
                       <p className="text-xs text-slate-300 leading-relaxed">
-                        “{result.officialApp?.description || 'This app provides official route maps, station information, fares, and service updates.'}”
+                        “{result.officialApp?.description || 'Not available'}”
                       </p>
                     </div>
 
@@ -411,7 +411,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
 
                       {/* Required Polite Recommendation Callout Prompt */}
                       <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 text-xs font-extrabold text-emerald-300 leading-relaxed">
-                        💡 {result.officialApp?.recommendationPrompt || 'If you would like live metro tracking and route updates on your phone, we recommend installing the official app from the Play Store.'}
+                        💡 {result.officialApp?.recommendationPrompt || 'No app available'}
                       </div>
                     </div>
                   </div>
@@ -434,7 +434,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                         <MapPin size={12} className="text-blue-400" /> Nearest Airport Station
                       </span>
                       <p className="text-sm font-extrabold text-white">
-                        {result.quickSummary?.nearestStation || result.metroNetwork?.airportStation || `${selectedAirport.code} Airport Station`}
+                        {result.quickSummary?.nearestStation || result.metroNetwork?.airportStation || 'Not available'}
                       </p>
                     </div>
 
@@ -444,7 +444,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                         <Clock size={12} className="text-cyan-400" /> Operating Hours
                       </span>
                       <p className="text-sm font-extrabold text-white">
-                        {result.quickSummary?.operatingHours || '05:00 AM – 11:30 PM'}
+                        {result.quickSummary?.operatingHours || 'Not available'}
                       </p>
                     </div>
 
@@ -454,7 +454,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                         <DollarSign size={12} className="text-emerald-400" /> Typical Fare Range
                       </span>
                       <p className="text-sm font-extrabold text-emerald-300">
-                        {result.quickSummary?.fareRange || '₹20 – ₹60'}
+                        {result.quickSummary?.fareRange || 'Not available'}
                       </p>
                     </div>
 
@@ -464,7 +464,7 @@ export default function MetroTrackingPanel({ selectedAirport }: MetroTrackingPan
                         <Navigation size={12} className="text-purple-400" /> Travel Time to City Center
                       </span>
                       <p className="text-sm font-extrabold text-white">
-                        {result.quickSummary?.travelTime || 'approx 20–35 mins'}
+                        {result.quickSummary?.travelTime || 'Not available'}
                       </p>
                     </div>
                   </div>

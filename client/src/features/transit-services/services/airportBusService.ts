@@ -9,6 +9,7 @@ export interface BusOfficialWebsite {
 export interface BusOfficialApp {
   name: string;
   playStoreUrl: string;
+  appStoreUrl?: string;
   packageName?: string;
   description: string;
   recommendationPrompt: string;
@@ -43,7 +44,7 @@ export interface BusServiceResult {
   travelTime?: string;
   officialWebsite?: string | BusOfficialWebsite;
   officialWebsiteObj?: BusOfficialWebsite;
-  officialAppObj?: BusOfficialApp;
+  officialAppObj?: BusOfficialApp | null;
   recommendedApp?: string;
   noBusDetails?: NoBusServiceDetails;
   notes?: string;

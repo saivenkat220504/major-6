@@ -81,16 +81,16 @@ export default function AirportBusPanel({ selectedAirport }: AirportBusPanelProp
   const websiteUrl = officialWebsiteObj?.url || (typeof result?.officialWebsite === 'string' ? result.officialWebsite : null);
 
   // Extract app details safely
-  const officialAppObj: BusOfficialApp | undefined = result?.officialAppObj;
-  const appName = officialAppObj?.name || result?.recommendedApp || `${selectedAirport.city} Bus App`;
+  const officialAppObj: BusOfficialApp | null | undefined = result?.officialAppObj;
+  const appName = officialAppObj?.name || 'No app available';
 
   const handleCopyDetails = () => {
     if (!result) return;
-    const text = `🚌 ${result.serviceName || 'Airport Bus Service'} (${selectedAirport.code})
-Operator: ${result.operator || 'Official Corporation'}
-Stops: ${result.busStops?.join(', ') || 'Airport Terminals & City Hubs'}
-Fare: ${result.fareRange || 'Standard Fare'}
-Operating Hours: ${result.operatingHours || '24x7'} | Frequency: ${result.frequency || 'Regular intervals'}
+    const text = `🚌 ${result.serviceName || 'Not available'} (${selectedAirport.code})
+  Operator: ${result.operator || 'Not available'}
+  Stops: ${result.busStops?.join(', ') || 'Not available'}
+  Fare: ${result.fareRange || 'Not available'}
+  Operating Hours: ${result.operatingHours || 'Not available'} | Frequency: ${result.frequency || 'Not available'}
 Website: ${websiteUrl || 'N/A'}`;
 
     navigator.clipboard.writeText(text);
@@ -307,7 +307,7 @@ Website: ${websiteUrl || 'N/A'}`;
                         </div>
                         <h4 className="text-xl font-black text-white">Airport Bus Service Available</h4>
                         <p className="text-sm font-bold text-emerald-300 mt-0.5">
-                          {result.serviceName || `${selectedAirport.city} Airport Express Bus`}
+                          {result.serviceName || 'No specific bus service available'}
                         </p>
                       </div>
                     </div>
@@ -318,7 +318,7 @@ Website: ${websiteUrl || 'N/A'}`;
                           <Building2 size={16} className="text-emerald-400" />
                           <div>
                             <span className="text-[9px] font-bold text-slate-400 block uppercase">Operator</span>
-                            <span className="text-xs font-bold text-white">{result.operator}</span>
+                            <span className="text-xs font-bold text-white">{result.operator || 'Not available'}</span>
                           </div>
                         </div>
                       )}
@@ -334,8 +334,8 @@ Website: ${websiteUrl || 'N/A'}`;
                   </div>
                 </div>
 
-                {/* Grid for Section 2 (Website) & Section 3 (App) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {/* Exact app details are shown only when the backend verified a service-specific listing. */}
+                <div className="grid grid-cols-1 gap-5">
                   {/* ── SECTION 2: Tracking & Official Information Website ──── */}
                   <div className="bg-[#071712] border border-emerald-500/30 rounded-2xl p-5 space-y-3.5 flex flex-col justify-between">
                     <div className="space-y-2">
@@ -387,23 +387,19 @@ Website: ${websiteUrl || 'N/A'}`;
                     )}
                   </div>
 
-                  {/* ── SECTION 3: Official App ─────────────────────────────── */}
+                  {/* ── BEST TRACKING APP ───────────────────────────────────── */}
                   <div className="bg-[#071712] border border-emerald-500/30 rounded-2xl p-5 space-y-3.5 flex flex-col justify-between">
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-extrabold uppercase tracking-widest text-teal-400 flex items-center gap-1.5">
-                          <Smartphone size={13} /> Official Android App
+                          <Smartphone size={13} /> Best Tracking App
                         </span>
-                        <span className="text-[10px] font-bold bg-teal-500/20 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded-full">
-                          Verified App
+                        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${officialAppObj ? 'bg-teal-500/20 text-teal-300 border-teal-500/30' : 'bg-white/5 text-slate-400 border-white/10'}`}>
+                          {officialAppObj ? 'Verified App' : 'No app available'}
                         </span>
                       </div>
 
                       <h5 className="text-base font-extrabold text-white">{appName}</h5>
-
-                      <p className="text-xs text-slate-300 leading-relaxed">
-                        “{officialAppObj?.description || 'This app provides official airport bus routes, timings, and service information.'}”
-                      </p>
                     </div>
 
                     <div className="space-y-3 pt-2">
@@ -415,15 +411,10 @@ Website: ${websiteUrl || 'N/A'}`;
                           className="flex items-center justify-center gap-2 w-full bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs py-3 px-4 rounded-xl shadow-lg shadow-teal-500/20 transition-all group"
                         >
                           <Smartphone size={15} />
-                          Install Official App from Play Store
+                          Install {officialAppObj.name} from Google Play
                           <ExternalLink size={13} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
                         </a>
                       )}
-
-                      {/* Required Polite Recommendation Callout Prompt */}
-                      <div className="bg-emerald-500/10 border border-emerald-500/25 rounded-xl p-3 text-xs font-extrabold text-emerald-300 leading-relaxed">
-                        🚌 {officialAppObj?.recommendationPrompt || 'For the most reliable bus tracking and service updates, we recommend installing the official app from the Play Store.'}
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -444,7 +435,7 @@ Website: ${websiteUrl || 'N/A'}`;
                       <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                         <Building2 size={12} className="text-emerald-400" /> Operator
                       </span>
-                      <p className="text-sm font-extrabold text-white">{result.operator || 'Public Transit Corp'}</p>
+                      <p className="text-sm font-extrabold text-white">{result.operator || 'Not available'}</p>
                     </div>
 
                     {/* Fare Information */}
@@ -452,7 +443,7 @@ Website: ${websiteUrl || 'N/A'}`;
                       <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                         <DollarSign size={12} className="text-emerald-400" /> Fare Information
                       </span>
-                      <p className="text-sm font-extrabold text-emerald-300">{result.fareRange || '₹150–₹350'}</p>
+                      <p className="text-sm font-extrabold text-emerald-300">{result.fareRange || 'Not available'}</p>
                     </div>
 
                     {/* Operating Hours */}
@@ -460,7 +451,7 @@ Website: ${websiteUrl || 'N/A'}`;
                       <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                         <Clock size={12} className="text-blue-400" /> Operating Hours
                       </span>
-                      <p className="text-sm font-extrabold text-white">{result.operatingHours || '24×7'}</p>
+                      <p className="text-sm font-extrabold text-white">{result.operatingHours || 'Not available'}</p>
                     </div>
 
                     {/* Frequency */}
@@ -468,7 +459,7 @@ Website: ${websiteUrl || 'N/A'}`;
                       <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400 flex items-center gap-1">
                         <RefreshCw size={12} className="text-cyan-400" /> Frequency
                       </span>
-                      <p className="text-sm font-extrabold text-white">{result.frequency || 'Every 15–30 mins'}</p>
+                      <p className="text-sm font-extrabold text-white">{result.frequency || 'Not available'}</p>
                     </div>
                   </div>
 
