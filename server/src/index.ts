@@ -11,6 +11,7 @@ import auraRoutes from './routes/aura';
 import baggageRoutes from './routes/baggage';
 import transitServicesRoutes from './routes/transitServicesRoutes';
 import metroTrackingRoutes from './routes/metroTracking';
+import airportBusRoutes from './routes/airportBus';
 import guardianRoutes from './routes/guardian';
 import https from 'https';
 import { createServer } from 'http';
@@ -33,6 +34,7 @@ app.use('/api/aura', auraRoutes);
 app.use('/api/transit-services', transitServicesRoutes);
 app.use('/api/baggage', baggageRoutes);
 app.use('/api/metro-tracking', metroTrackingRoutes);
+app.use('/api/airport-bus', airportBusRoutes);
 app.use('/api/guardian', guardianRoutes);
 
 app.get('/api/tts', (req, res) => {
