@@ -189,16 +189,16 @@ Do not create generic replacement names.
 When a specific proper name exists in the results, preserve that exact name.
 
 For app information:
-- return the exact app name appearing in the search results
-- return the exact store URL appearing in the search results
-- if no specific app is present, return null.
-- Do not reject a result merely because it does not contain a particular keyword pattern.
-- Select an app only when it is associated with the identified bus service/operator in the supplied results.
+- Return an app only if it is specifically associated with the identified airport bus service or its operator.
+- Do not return generic bus booking platforms, generic travel apps, generic airport guide apps, or unrelated shuttle apps.
+- Return the exact app name appearing in the search results.
+- Return the exact Play Store URL appearing in the search results.
+- If no specific service/operator app is found, return null.
 
 For bus service:
-- return the most specific service name explicitly supported by the results.
-- return the operator if explicitly stated.
-- if information is unavailable, return null.
+- Return the most specific service name explicitly supported by the results.
+- Return the operator if explicitly stated.
+- If information is unavailable, return null.
 - Do not output broad labels like "Airport Bus Service" when a specific proper-name service is not explicitly shown.
 
 Source priority to follow when selecting answers:
@@ -277,6 +277,88 @@ Return strict JSON only with this exact shape:
   }
 }
 
+async function findBestBusApp(
+  operator: string | null,
+  serviceName: string | null,
+  city: string,
+  results: SearchResult[]
+): Promise<BusTrackingApp | null> {
+  const apiKey = process.env.LLM_API || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
+  if (!apiKey || results.length === 0) {
+    return null;
+  }
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: process.env.LLM_API || process.env.OPENROUTER_API_KEY ? 'https://openrouter.ai/api/v1' : undefined,
+  });
+
+  const systemPrompt = `You are given current web-search results for a mobile transit app.
+
+Task: Identify the official mobile tracking or ticketing app on Google Play specifically for the identified airport bus service or its operator.
+
+Rules:
+1. Return an app only if it is specifically associated with the identified airport bus service or its operator.
+2. Do not return generic bus booking platforms, generic travel apps, generic airport guide apps, or unrelated shuttle apps.
+3. If the operator is null or not provided, return an app only if the search result itself clearly identifies an official airport-specific bus-service app for ${city}.
+4. App name must come directly from a search result title or snippet.
+5. Play Store URL must come directly from a search result (play.google.com/store/apps/details?id=...).
+6. Do NOT invent an app name or URL.
+7. Do NOT return generic replacement names such as "Airport Bus App", "Official Airport App", "Travel Companion", "City Bus App".
+8. If no specific service/operator app is found, return null.
+
+Return strict JSON only:
+{
+  "bestTrackingApp": {
+    "name": "Exact App Name",
+    "playStoreUrl": "https://play.google.com/store/apps/details?id=..."
+  } or null
+}`;
+
+  const userPrompt = JSON.stringify(
+    {
+      operator,
+      serviceName,
+      city,
+      searchResults: results,
+    },
+    null,
+    2
+  );
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'openai/gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0,
+      max_tokens: 400,
+    });
+
+    const raw = response.choices?.[0]?.message?.content || '{}';
+    const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+
+    if (
+      parsed?.bestTrackingApp &&
+      typeof parsed.bestTrackingApp.name === 'string' &&
+      typeof parsed.bestTrackingApp.playStoreUrl === 'string' &&
+      isPlayStoreUrl(parsed.bestTrackingApp.playStoreUrl)
+    ) {
+      return {
+        name: parsed.bestTrackingApp.name.trim(),
+        playStoreUrl: parsed.bestTrackingApp.playStoreUrl.trim(),
+      };
+    }
+    return null;
+  } catch (error: any) {
+    console.error('[AirportBusController] App discovery LLM error:', error.message);
+    return null;
+  }
+}
+
 function sanitizeGroundedBusResult(summary: GroundedBusResult, results: SearchResult[]): GroundedBusResult {
   const sanitized: GroundedBusResult = {
     hasBusService: summary.hasBusService,
@@ -314,8 +396,7 @@ function sanitizeGroundedBusResult(summary: GroundedBusResult, results: SearchRe
     if (
       matched &&
       appName &&
-      (!placeholder || textContainsName(results, appName)) &&
-      isBusAppEvidenceRelevant(matched, summary.operator, summary.serviceName)
+      (!placeholder || textContainsName(results, appName))
     ) {
       sanitized.bestTrackingApp = {
         name: appName,
@@ -384,14 +465,43 @@ export async function investigateAirportBus(req: Request, res: Response) {
       });
     }
 
-    const finalData = sanitizeGroundedBusResult(summarized, searchResults);
-    const serviceEvidence = findResultByText(searchResults, finalData.serviceName);
-    const operatorEvidence = findResultByText(searchResults, finalData.operator);
+    let allSearchResults = [...searchResults];
+
+    if (summarized.hasBusService) {
+      const op = (summarized.operator || '').trim();
+      const srv = (summarized.serviceName || '').trim();
+
+      const appSearchTerms = op
+        ? [op, srv, 'official app Google Play'].filter(Boolean).join(' ')
+        : [srv, normalizedCity, 'official airport bus app Google Play'].filter(Boolean).join(' ');
+      const appQuery = appSearchTerms.trim() || `${normalizedCity} official airport bus app Google Play`;
+
+      console.log(`[AirportBusController] Focused app query: "${appQuery}"`);
+      const appSearchResults = await searchAirportBus(appQuery);
+
+      if (appSearchResults.length > 0) {
+        allSearchResults = [...searchResults, ...appSearchResults];
+        const discoveredApp = await findBestBusApp(
+          op || null,
+          srv || null,
+          normalizedCity,
+          appSearchResults
+        );
+
+        summarized.bestTrackingApp = discoveredApp;
+      } else if (!op) {
+        summarized.bestTrackingApp = null;
+      }
+    }
+
+    const finalData = sanitizeGroundedBusResult(summarized, allSearchResults);
+    const serviceEvidence = findResultByText(allSearchResults, finalData.serviceName);
+    const operatorEvidence = findResultByText(allSearchResults, finalData.operator);
     const websiteEvidence = finalData.officialWebsite
-      ? findResultByUrl(searchResults, finalData.officialWebsite.url)
+      ? findResultByUrl(allSearchResults, finalData.officialWebsite.url)
       : null;
     const appEvidence = finalData.bestTrackingApp
-      ? findResultByUrl(searchResults, finalData.bestTrackingApp.playStoreUrl)
+      ? findResultByUrl(allSearchResults, finalData.bestTrackingApp.playStoreUrl)
       : null;
 
     return res.status(200).json({
@@ -423,7 +533,7 @@ export async function investigateAirportBus(req: Request, res: Response) {
         officialWebsite: websiteEvidence,
         app: appEvidence,
       },
-      searchResults: includeSearchResults ? searchResults : undefined,
+      searchResults: includeSearchResults ? allSearchResults : undefined,
       lastUpdated: checkedAt,
     });
   } catch (error: any) {
