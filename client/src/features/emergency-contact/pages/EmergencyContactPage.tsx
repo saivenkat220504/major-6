@@ -41,36 +41,63 @@ export default function EmergencyContactPage() {
   }
 
   const handleEmergencyAlert = async () => {
-    if (!selectedReason) return
+    if (!selectedReason || isLoading) return
 
     setStatus('locating')
     setErrorMsg('')
 
-    const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error('Geolocation is not supported by your browser.'))
-        return
-      }
-      navigator.geolocation.getCurrentPosition(
-        resolve,
-        (err) => reject(err),
-        { timeout: 15000, enableHighAccuracy: true }
-      )
-    }).catch((err: Error) => {
-      return {
-        coords: {
-          latitude: 17.3934,
-          longitude: 78.4706,
-          accuracy: 10,
-        },
-      } as unknown as GeolocationPosition
-    })
+    if (!navigator.geolocation) {
+      setErrorMsg('Live location is not supported by this browser.')
+      setStatus('error')
+      return
+    }
 
-    if (!position) return
+    let position: GeolocationPosition
+    try {
+      position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          reject,
+          {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 0,
+          }
+        )
+      })
+    } catch (err: any) {
+      let msg = 'Live location could not be obtained. Please try again.'
+      if (err?.code === 1 || err?.code === err?.PERMISSION_DENIED) {
+        msg = 'Location permission is required to share your live location. Please allow location access and try again.'
+      } else if (err?.code === 2 || err?.code === err?.POSITION_UNAVAILABLE) {
+        msg = 'Your current location could not be detected. Please check your device location settings and try again.'
+      } else if (err?.code === 3 || err?.code === err?.TIMEOUT) {
+        msg = 'Live location could not be obtained in time. Please try again.'
+      }
+      setErrorMsg(msg)
+      setStatus('error')
+      return
+    }
 
     const { latitude, longitude, accuracy } = position.coords
-    const boarding = getBoardingData()
 
+    // Validate coordinates
+    if (
+      typeof latitude !== 'number' ||
+      typeof longitude !== 'number' ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      setErrorMsg('Detected coordinates are invalid. Please check your GPS and try again.')
+      setStatus('error')
+      return
+    }
+
+    const boarding = getBoardingData()
     setStatus('sending')
 
     try {
@@ -84,9 +111,9 @@ export default function EmergencyContactPage() {
         priority: selectedReason.priority,
         latitude,
         longitude,
-        accuracy,
-        terminal: 'Terminal 3',
-        timestamp: new Date().toISOString(),
+        accuracy: typeof accuracy === 'number' && Number.isFinite(accuracy) ? accuracy : null,
+        terminal: boarding?.terminal || 'Terminal 3',
+        timestamp: new Date(position.timestamp || Date.now()).toISOString(),
       }
 
       const response = await fetch('/api/emergency-alert', {
@@ -94,6 +121,11 @@ export default function EmergencyContactPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || `Server responded with status ${response.status}`)
+      }
 
       const savedData = {
         reason: selectedReason,
@@ -109,19 +141,10 @@ export default function EmergencyContactPage() {
 
       setAlertData(savedData)
       setAlertSent(true)
+      setStatus('idle')
     } catch (err: any) {
-      const savedData = {
-        reason: selectedReason,
-        latitude,
-        longitude,
-        passengerName: boarding?.passenger_name ?? 'Sai Venkat',
-        ticketId: boarding?.ticket_id ?? '3409967503',
-        terminal: 'Terminal 3',
-      }
-      sessionStorage.setItem(ALERT_SENT_KEY, 'true')
-      sessionStorage.setItem(ALERT_DATA_KEY, JSON.stringify(savedData))
-      setAlertData(savedData)
-      setAlertSent(true)
+      setErrorMsg(err.message || 'Failed to dispatch emergency alert. Please try again.')
+      setStatus('error')
     }
   }
 
@@ -219,10 +242,15 @@ export default function EmergencyContactPage() {
           onSelectReason={(r) => setSelectedReason(r)}
         />
 
-        <div className="flex items-center gap-2 px-1 text-xs text-[#94A3B8]">
-          <MapPin className="w-4 h-4 text-[#14C8FF] shrink-0" />
-          <span>High-precision GPS telemetry will automatically transmit to Police, Medical & Terminal Fire Dispatch.</span>
-        </div>
+        {errorMsg && (
+          <div className="p-4 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-start gap-3 text-red-300 text-xs font-semibold animate-in fade-in duration-200">
+            <ShieldAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-red-200">{errorMsg}</p>
+              <p className="text-[11px] text-red-300/80">Please check your location settings/permissions and click Broadcast again to retry.</p>
+            </div>
+          </div>
+        )}
 
         <button
           id="emergency-alert-btn"
@@ -235,7 +263,13 @@ export default function EmergencyContactPage() {
           }`}
         >
           {isLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Siren className="w-5 h-5" />}
-          <span>{isLoading ? 'Dispatching Emergency Alert...' : 'Broadcast Multi-Agency Emergency Alert'}</span>
+          <span>
+            {status === 'locating'
+              ? 'Getting your live location...'
+              : status === 'sending'
+              ? 'Dispatching Emergency Alert...'
+              : 'Broadcast Multi-Agency Emergency Alert'}
+          </span>
         </button>
       </div>
     </div>

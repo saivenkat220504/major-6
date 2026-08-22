@@ -6,7 +6,6 @@ import {
   Globe,
   ShieldCheck,
   ChevronDown,
-  Sparkles,
   User,
   LayoutDashboard,
   Plane,
@@ -89,10 +88,6 @@ export default function AirportHeader({ onOpenNotifications, unreadCount = 3 }: 
     setShowLangDropdown(false)
   }
 
-  const openAura = () => {
-    window.dispatchEvent(new Event('aura-open-event'))
-  }
-
   return (
     <header className="sticky top-0 z-50 w-full glass-panel border-b border-white/10 shadow-2xl backdrop-blur-xl bg-[#06121F]/95">
       <div className="max-w-7xl mx-auto px-3 sm:px-4 lg:px-6 h-[72px] flex items-center justify-between gap-2 lg:gap-4">
@@ -144,17 +139,8 @@ export default function AirportHeader({ onOpenNotifications, unreadCount = 3 }: 
           })}
         </nav>
 
-        {/* ── RIGHT SECTION: Actions (AI Concierge, Notifications, Language, Profile) ── */}
+        {/* ── RIGHT SECTION: Actions (Notifications, Language, Profile) ── */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          {/* AI Travel Concierge Trigger */}
-          <button
-            onClick={openAura}
-            className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600/30 via-cyan-600/30 to-blue-500/30 hover:from-blue-600/50 hover:to-cyan-500/50 border border-cyan-400/40 text-cyan-300 text-xs font-black shadow-lg shadow-cyan-500/15 active:scale-[0.98] transition-all cursor-pointer"
-            title="Ask AI Airport Assistant"
-          >
-            <Sparkles className="w-4 h-4 text-[#14C8FF] animate-spin shrink-0" style={{ animationDuration: '6s' }} />
-            <span>AI</span>
-          </button>
 
           {/* Notifications Trigger Button */}
           <button

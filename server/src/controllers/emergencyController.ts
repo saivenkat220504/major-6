@@ -141,9 +141,24 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
 
     const reasonText = emergencyType || emergencyReason;
 
-    if (!reasonText || latitude === undefined || longitude === undefined) {
+    if (!reasonText) {
       return res.status(400).json({
-        error: 'Missing required fields: emergencyType/emergencyReason, latitude, longitude',
+        error: 'Missing required field: emergencyType/emergencyReason',
+      });
+    }
+
+    if (
+      typeof latitude !== 'number' ||
+      typeof longitude !== 'number' ||
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      latitude < -90 ||
+      latitude > 90 ||
+      longitude < -180 ||
+      longitude > 180
+    ) {
+      return res.status(400).json({
+        error: 'Valid GPS coordinates (latitude between -90 and 90, longitude between -180 and 180) are required to dispatch emergency services.',
       });
     }
 

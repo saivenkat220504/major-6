@@ -8,6 +8,7 @@ import 'leaflet/dist/leaflet.css'
 import Navbar from './shared/components/Navbar'
 import { useDarkMode } from './shared/hooks/useDarkMode'
 import AuraModal from './features/ai-assistant/components/AuraModal'
+import FloatingAskAIButton from './features/ai-assistant/components/FloatingAskAIButton'
 import { LanguageProvider } from './shared/context/LanguageContext'
 import TicketScanPage from './features/boarding-pass/pages/TicketScanPage'
 
@@ -54,13 +55,17 @@ function AppContent() {
     )
   }
 
-  // Step 2: Render full Navbar and App routes after ticket scanning
+  // Step 2: Render full Navbar, App routes, Floating Ask AI button, and Aura modal
   return (
     <>
       <Navbar />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-28 lg:pb-12 text-[#F8FAFC]">
         <AppRoutes />
       </div>
+      <FloatingAskAIButton
+        isOpen={auraOpen}
+        onClick={() => setAuraOpen(true)}
+      />
       <AuraModal
         open={auraOpen}
         onClose={() => {
