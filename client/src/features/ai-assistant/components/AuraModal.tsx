@@ -309,6 +309,9 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
       } else if (data.action?.type === 'customer_support') {
         navigate('/chat');
       } else if (data.action?.type === 'baggage_guidance') {
+        if (data.action?.autoCheckTag) {
+          sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
+        }
         navigate('/baggage-guidance');
       } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services') {
         navigate('/transit-services');
@@ -413,6 +416,9 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
       } else if (data.action?.type === 'customer_support') {
         navigate('/chat');
       } else if (data.action?.type === 'baggage_guidance') {
+        if (data.action?.autoCheckTag) {
+          sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
+        }
         navigate('/baggage-guidance');
       } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services') {
         navigate('/transit-services');

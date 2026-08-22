@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import './config/api'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import AppRoutes from './app/routes'

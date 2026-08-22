@@ -625,6 +625,14 @@ function BagCard({
 
   const isBag2 = bagNumber === 2 || bag.tag === '176-8927362'
 
+  useEffect(() => {
+    const autoTag = sessionStorage.getItem('autoCheckBagTag')
+    if (autoTag === bag.tag || (autoTag === 'ALL' && isBag2)) {
+      sessionStorage.removeItem('autoCheckBagTag')
+      checkStatus()
+    }
+  }, [bag.tag, isBag2])
+
   async function checkStatus() {
     setLoading(true)
     setError(null)
