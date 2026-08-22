@@ -95,16 +95,22 @@ function matchAirportLocation(query: string, candidateList: string[]): string | 
   const exact = candidateList.find((loc) => loc.toLowerCase() === qClean);
   if (exact) return exact;
 
-  // 2. 2-way inclusion match ignoring spaces & non-alphanumerics
+  // 2. Exact alphanumeric match (e.g. "entrance 10" -> "entrance10" matches "Entrance 10")
   const normQ = qClean.replace(/[^a-z0-9]/g, '');
+  const exactNorm = candidateList.find((loc) => {
+    const normLoc = loc.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return normLoc === normQ;
+  });
+  if (exactNorm) return exactNorm;
+
+  // 3. Substring inclusion match (e.g. "Gate A9" for "a9")
   const matched = candidateList.find((loc) => {
     const locClean = loc.toLowerCase();
-    const normLoc = locClean.replace(/[^a-z0-9]/g, '');
-    return normLoc === normQ || locClean.includes(qClean) || qClean.includes(locClean);
+    return locClean.includes(qClean) || qClean.includes(locClean);
   });
   if (matched) return matched;
 
-  // 3. Token match
+  // 4. Token match
   const tokens = qClean.split(/\s+/).filter((t) => t.length > 1);
   if (tokens.length > 0) {
     const tokenMatched = candidateList.find((loc) => {
@@ -128,7 +134,7 @@ AGENT AUTHORITY & PERMISSION MODEL
 ================================================================================
 
 1. AUTONOMOUS ACTIONS (Aura can execute directly):
-   - "find_route": Route planning between source and destination inside the terminal.
+   - "find_route": Route planning between source and destination inside the terminal. Extract the EXACT source and destination provided by the user (e.g. if the user says "entrance 10", extract source as "Entrance 10"). Do NOT substitute other locations (like "Main Entrance").
    - "check_baggage_status": Retrieve real-time baggage status for the user's checked bags.
    - "get_flight_info": Provide flight details (gate, terminal, seat, boarding time countdown) directly from passenger context.
 
@@ -147,16 +153,18 @@ AGENT AUTHORITY & PERMISSION MODEL
    - Never verify a bag or scan a barcode automatically.
    - Never place food orders or make payments.
    - Never open external 3D radar links directly.
+   - Never substitute different locations than what the user asked for.
    - Never fabricate non-existent gates, locations, flights, or routes.
 
 ================================================================================
 IRRELEVANT / OUT-OF-SCOPE QUESTIONS
 ================================================================================
-If the user asks something unrelated to their airport journey (e.g., "Where is my gf?", "Who will win the World Cup?", "Tell me a joke", "What is the capital of France?"), you MUST respond with:
+If the user asks something completely unrelated to their airport journey (e.g., "Where is my gf?", "Who will win the World Cup?", "Tell me a joke", "What is the capital of France?"), you MUST respond with:
 "Please ask something relevant to your airport journey."
 Do NOT call any tool for out-of-scope questions.
 
 Relevant questions include: flights, boarding, gates, terminals, baggage, navigation, transit, food, airport facilities, emergency assistance, airport services, and journey planning.
+Note: Any navigation, directions, or route request (even with unknown or typo location names like 'Entrance 999' or 'Gate Z99') is ALWAYS a relevant journey question and must use 'find_route' with the extracted names so the validation engine can check them.
 
 ================================================================================
 RESPONSE FORMAT
@@ -201,14 +209,14 @@ Status: ${flightTracking.status || 'Boarding Soon'}
 }
 
 function buildDestinationsContext(destinations: any[]): string {
-  const defaultList = KNOWN_AIRPORT_LOCATIONS.map((loc) => `- "${loc}"`).join('\n');
-  if (!Array.isArray(destinations) || destinations.length === 0) {
-    return `\n--- Valid Airport Navigation Locations ---\n${defaultList}\n------------------------------------------`;
-  }
-  const customList = destinations
-    .map((d: any) => `- "${d.label || d.id}" (Category: ${d.category || 'general'})`)
-    .join('\n');
-  return `\n--- Valid Airport Navigation Locations ---\n${customList}\n------------------------------------------`;
+  const combinedLocations = Array.from(
+    new Set([
+      ...KNOWN_AIRPORT_LOCATIONS,
+      ...(Array.isArray(destinations) ? destinations.map((d: any) => d.label || d.id) : []),
+    ])
+  );
+  const list = combinedLocations.map((loc) => `- "${loc}"`).join('\n');
+  return `\n--- Valid Airport Navigation Locations ---\n${list}\n------------------------------------------`;
 }
 
 // ── Error Response Helper ─────────────────────────────────────────────────────
