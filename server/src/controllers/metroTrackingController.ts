@@ -49,6 +49,34 @@ function normalizeUrl(value: string): string {
   return value.trim().replace(/\/$/, '').toLowerCase();
 }
 
+function cleanMetroOfficialWebsiteUrl(urlStr: string): string {
+  try {
+    const parsed = new URL(urlStr.trim());
+    const normalizedPath = parsed.pathname.toLowerCase().replace(/\/+$/, '');
+    const homepagePaths = new Set([
+      '',
+      '/index.htm',
+      '/index.html',
+      '/index.php',
+      '/home',
+      '/home.htm',
+      '/home.html',
+      '/home.php',
+      '/default.htm',
+      '/default.html',
+      '/default.aspx',
+    ]);
+
+    if (homepagePaths.has(normalizedPath)) {
+      return `${parsed.origin}/`;
+    }
+
+    return urlStr.trim();
+  } catch {
+    return urlStr.trim();
+  }
+}
+
 function isPlayStoreUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
@@ -60,7 +88,11 @@ function isPlayStoreUrl(value: string): boolean {
 
 function findResultByUrl(results: SearchResult[], url: string): SearchResult | null {
   const normalized = normalizeUrl(url);
-  return results.find((item) => normalizeUrl(item.url) === normalized) || null;
+  const directMatch = results.find((item) => normalizeUrl(item.url) === normalized);
+  if (directMatch) return directMatch;
+
+  const cleanedTarget = normalizeUrl(cleanMetroOfficialWebsiteUrl(url));
+  return results.find((item) => normalizeUrl(cleanMetroOfficialWebsiteUrl(item.url)) === cleanedTarget) || null;
 }
 
 function textContainsName(results: SearchResult[], name: string): boolean {
@@ -195,16 +227,16 @@ Do not create generic replacement names.
 When a specific proper name exists in the results, preserve that exact name.
 
 For app information:
-- return the exact app name appearing in the search results
-- return the exact store URL appearing in the search results
-- if no specific app is present, return null.
-- Do not reject a result merely because it does not contain a particular keyword pattern.
-- Select an app only when it is associated with the identified metro system/operator in the supplied results.
+- Return an app only if it is specifically associated with or published by the identified metro authority/operator or system.
+- Do not return generic third-party transit apps, generic travel apps, or generic guide apps.
+- Return the exact app name appearing in the search results.
+- Return the exact Play Store URL appearing in the search results.
+- If no specific authority/system app is found, return null.
 
 For metro service:
-- return the most specific service/system name explicitly supported by the results.
-- return the authority/operator if explicitly stated.
-- if information is unavailable, return null.
+- Return the most specific service/system name explicitly supported by the results.
+- Return the authority/operator if explicitly stated.
+- If information is unavailable, return null.
 - Do not output broad labels like "Airport Metro" when a specific proper-name system is not explicitly shown.
 
 Source priority to follow when selecting answers:
@@ -294,6 +326,89 @@ Return strict JSON only with this exact shape:
   }
 }
 
+async function findBestMetroApp(
+  authority: string | null,
+  systemName: string | null,
+  city: string,
+  results: SearchResult[]
+): Promise<MetroOfficialApp | null> {
+  const apiKey = process.env.LLM_API || process.env.OPENROUTER_API_KEY || process.env.OPENAI_API_KEY;
+  if (!apiKey || results.length === 0) {
+    return null;
+  }
+
+  const client = new OpenAI({
+    apiKey,
+    baseURL: process.env.LLM_API || process.env.OPENROUTER_API_KEY ? 'https://openrouter.ai/api/v1' : undefined,
+  });
+
+  const systemPrompt = `You are given current web-search results for a mobile transit app.
+
+Task: Identify the official mobile tracking or ticketing app on Google Play specifically for the identified metro authority/operator or system.
+
+Rules:
+1. Return an app only if it is specifically associated with or published by the identified metro authority/operator or system.
+2. Prefer the official authority/operator's app.
+3. Do not return generic third-party transit apps, generic travel apps, or generic guide apps.
+4. If the authority/operator is null or not provided, return an app only if the search result itself clearly identifies an official airport/city metro app for ${city}.
+5. App name must come directly from a search result title or snippet.
+6. Play Store URL must come directly from a search result (play.google.com/store/apps/details?id=...).
+7. Do NOT invent an app name or URL.
+8. Do NOT return generic replacement names such as "Airport Metro App", "Official Metro App", "Travel Companion", "City Metro App".
+9. If no specific official authority/system app is found, return null.
+
+Return strict JSON only:
+{
+  "officialApp": {
+    "name": "Exact App Name",
+    "playStoreUrl": "https://play.google.com/store/apps/details?id=..."
+  } or null
+}`;
+
+  const userPrompt = JSON.stringify(
+    {
+      authority,
+      systemName,
+      city,
+      searchResults: results,
+    },
+    null,
+    2
+  );
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'openai/gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0,
+      max_tokens: 400,
+    });
+
+    const raw = response.choices?.[0]?.message?.content || '{}';
+    const cleaned = raw.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+
+    if (
+      parsed?.officialApp &&
+      typeof parsed.officialApp.name === 'string' &&
+      typeof parsed.officialApp.playStoreUrl === 'string' &&
+      isPlayStoreUrl(parsed.officialApp.playStoreUrl)
+    ) {
+      return {
+        name: parsed.officialApp.name.trim(),
+        playStoreUrl: parsed.officialApp.playStoreUrl.trim(),
+      };
+    }
+    return null;
+  } catch (error: any) {
+    console.error('[MetroTrackingController] App discovery LLM error:', error.message);
+    return null;
+  }
+}
+
 function sanitizeGroundedMetro(summary: GroundedMetroResult, results: SearchResult[]): GroundedMetroResult {
   const sanitized: GroundedMetroResult = {
     hasMetro: summary.hasMetro,
@@ -322,7 +437,7 @@ function sanitizeGroundedMetro(summary: GroundedMetroResult, results: SearchResu
     if (matched) {
       sanitized.officialWebsite = {
         title: summary.officialWebsite.title?.trim() || matched.title || 'Official metro website',
-        url: matched.url,
+        url: cleanMetroOfficialWebsiteUrl(summary.officialWebsite.url || matched.url),
       };
     }
   }
@@ -337,8 +452,7 @@ function sanitizeGroundedMetro(summary: GroundedMetroResult, results: SearchResu
     if (
       matched &&
       appName &&
-      (!placeholder || textContainsName(results, appName)) &&
-      isMetroAppEvidenceRelevant(matched, summary.authority, summary.officialSystemName)
+      (!placeholder || textContainsName(results, appName))
     ) {
       sanitized.officialApp = {
         name: appName,
@@ -407,14 +521,43 @@ export async function investigateMetro(req: Request, res: Response) {
       });
     }
 
-    const finalData = sanitizeGroundedMetro(summarized, searchResults);
-    const systemEvidence = findResultByText(searchResults, finalData.officialSystemName);
-    const operatorEvidence = findResultByText(searchResults, finalData.authority);
+    let allSearchResults = [...searchResults];
+
+    if (summarized.hasMetro) {
+      const auth = (summarized.authority || '').trim();
+      const sys = (summarized.officialSystemName || '').trim();
+
+      const appSearchTerms = auth
+        ? [auth, sys, 'official app Google Play'].filter(Boolean).join(' ')
+        : [sys, normalizedCity, 'official metro app Google Play'].filter(Boolean).join(' ');
+      const appQuery = appSearchTerms.trim() || `${normalizedCity} official metro app Google Play`;
+
+      console.log(`[MetroTrackingController] Focused app query: "${appQuery}"`);
+      const appSearchResults = await searchMetro(appQuery);
+
+      if (appSearchResults.length > 0) {
+        allSearchResults = [...searchResults, ...appSearchResults];
+        const discoveredApp = await findBestMetroApp(
+          auth || null,
+          sys || null,
+          normalizedCity,
+          appSearchResults
+        );
+
+        summarized.officialApp = discoveredApp;
+      } else if (!auth) {
+        summarized.officialApp = null;
+      }
+    }
+
+    const finalData = sanitizeGroundedMetro(summarized, allSearchResults);
+    const systemEvidence = findResultByText(allSearchResults, finalData.officialSystemName);
+    const operatorEvidence = findResultByText(allSearchResults, finalData.authority);
     const websiteEvidence = finalData.officialWebsite
-      ? findResultByUrl(searchResults, finalData.officialWebsite.url)
+      ? findResultByUrl(allSearchResults, finalData.officialWebsite.url)
       : null;
     const appEvidence = finalData.officialApp
-      ? findResultByUrl(searchResults, finalData.officialApp.playStoreUrl)
+      ? findResultByUrl(allSearchResults, finalData.officialApp.playStoreUrl)
       : null;
 
     return res.status(200).json({
