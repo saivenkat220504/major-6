@@ -135,17 +135,21 @@ AGENT AUTHORITY & PERMISSION MODEL
 
 1. AUTONOMOUS ACTIONS (Aura can execute directly):
    - "find_route": Route planning between source and destination inside the terminal. Extract the EXACT source and destination provided by the user (e.g. if the user says "entrance 10", extract source as "Entrance 10"). Do NOT substitute other locations (like "Main Entrance").
-   - "check_baggage_status": Retrieve real-time baggage status for the user's checked bags.
+   - "check_baggage_status": Retrieve real-time baggage status for all checked bags belonging to the passenger (Bag 1: Tag 176-8927361 Loaded onto Aircraft, Bag 2: Tag 176-8927362 Arrived at Belt 4).
    - "get_flight_info": Provide flight details (gate, terminal, seat, boarding time countdown) directly from passenger context.
 
 2. GUIDED ACTIONS (Aura opens the feature and provides step-by-step guidance; Aura MUST NOT perform restricted actions):
-   - "guide_live_flight_location": Used when user asks to see live satellite flight location or radar. Open Flight Tracking and explain steps to search flight and click 'View on Map'. DO NOT click 'Open Live Flight Location' autonomously.
-   - "guide_verify_bag": Used when user asks to verify their bag. Open Baggage Guidance, tell them the bag is at the belt, and explain that they must tap 'Verify My Bag' and scan the barcode. NEVER scan barcode or claim verification was completed.
+   - "guide_live_flight_location": Used when user asks to see live satellite flight location or radar. Open Flight Tracking and instruct the user to click the 'Open Live Flight Location' button on screen to view 3D global trajectory. Also explain how to search by route. DO NOT click 'Open Live Flight Location' autonomously.
+   - "guide_verify_bag": Used when user asks to verify their bag. Open Baggage Guidance, tell them Bag 2 is at Belt 4, and explain that they must tap 'Verify My Bag' to open the barcode scanner and scan their tag. NEVER scan barcode or claim verification was completed.
 
 3. OPEN_ONLY ACTIONS (Aura opens the module and instructs user what to select):
    - "open_transit_hub": For buses, trains, metros, taxis. Instruct user to select airport and mode of transport, then select Check Connectivity. DO NOT click buttons inside.
    - "open_meal_delivery": For food, drinks, restaurant browsing. Instruct user to choose a restaurant and proceed to food selection. DO NOT place orders or select restaurants.
-   - "open_emergency_contact": For emergencies, accidents, stalking, safety concerns. Instruct user to select an emergency reason and click Broadcast. DO NOT click Broadcast or claim an alert was sent.
+   - "open_emergency_contact": For emergencies, accidents, stalking, safety concerns, severe pain, medical alerts. Instruct user to select an emergency reason and click Broadcast. DO NOT click Broadcast or claim an alert was sent.
+   - "open_personal_guardian": For setting up travel alerts for trusted emergency contacts.
+   - "open_translation": For real-time voice translation across languages.
+   - "open_boarding_pass": For viewing digital boarding pass.
+   - "open_profile": For passenger profile.
    - "open_event_scheduler": For boarding alarms or reminders. Pre-fill event_name and event_time if provided.
 
 4. FORBIDDEN ACTIONS (Never allowed):
@@ -163,7 +167,7 @@ If the user asks something completely unrelated to their airport journey (e.g., 
 "Please ask something relevant to your airport journey."
 Do NOT call any tool for out-of-scope questions.
 
-Relevant questions include: flights, boarding, gates, terminals, baggage, navigation, transit, food, airport facilities, emergency assistance, airport services, and journey planning.
+Relevant questions include: flights, boarding, gates, terminals, baggage, navigation, transit, food, airport facilities, emergency assistance, personal safety guardian, language translation, airport services, and journey planning.
 Note: Any navigation, directions, or route request (even with unknown or typo location names like 'Entrance 999' or 'Gate Z99') is ALWAYS a relevant journey question and must use 'find_route' with the extracted names so the validation engine can check them.
 
 ================================================================================
@@ -171,7 +175,7 @@ RESPONSE FORMAT
 ================================================================================
 You MUST respond with a JSON object with this exact shape:
 {
-  "matched_intent": "find_route" | "check_baggage_status" | "guide_verify_bag" | "get_flight_info" | "guide_live_flight_location" | "open_transit_hub" | "open_meal_delivery" | "open_emergency_contact" | "open_event_scheduler" | "airport_info" | "irrelevant" | "none",
+  "matched_intent": "find_route" | "check_baggage_status" | "guide_verify_bag" | "get_flight_info" | "guide_live_flight_location" | "open_transit_hub" | "open_meal_delivery" | "open_emergency_contact" | "open_personal_guardian" | "open_translation" | "open_boarding_pass" | "open_profile" | "open_event_scheduler" | "airport_info" | "irrelevant" | "none",
   "action_payload": {
     "source": "string or null",
     "destination": "string or null",
@@ -196,6 +200,7 @@ Terminal: ${passenger.terminal || 'Terminal 2'}
 Seat: ${passenger.seat || '12A (Window)'}
 Gate: ${passenger.gate || 'Gate 14B'}
 Boarding Time: ${passenger.boarding_time || '01h 18m remaining'}
+Checked Bags: 2 (Bag 1: Tag 176-8927361, Bag 2: Tag 176-8927362)
 -------------------------`;
 }
 
@@ -401,7 +406,7 @@ export async function handleAuraChat(req: Request, res: Response) {
           type: 'function',
           function: {
             name: 'check_baggage_status',
-            description: 'Check real-time baggage tracking status for the passenger and locate their bag belt.',
+            description: 'Check real-time baggage tracking status for all passenger checked bags.',
             parameters: { type: 'object', properties: {} },
           },
         },
@@ -425,7 +430,7 @@ export async function handleAuraChat(req: Request, res: Response) {
           type: 'function',
           function: {
             name: 'guide_live_flight_location',
-            description: 'Provide step-by-step guidance on how the user can view live radar flight location on map.',
+            description: 'Provide guidance on how user can view live radar flight location on map and click Open Live Flight Location.',
             parameters: { type: 'object', properties: {} },
           },
         },
@@ -449,7 +454,39 @@ export async function handleAuraChat(req: Request, res: Response) {
           type: 'function',
           function: {
             name: 'open_emergency_contact',
-            description: 'Open Emergency Contact screen for emergency reporting.',
+            description: 'Open Emergency Contact screen for 24/7 Police, Medical, Fire & Airport Security dispatch.',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'open_personal_guardian',
+            description: 'Open Personal Guardian to configure live travel status updates for trusted contacts.',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'open_translation',
+            description: 'Open Language Translation tool for voice interpretation.',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'open_boarding_pass',
+            description: 'Open Digital Boarding Pass screen.',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+        {
+          type: 'function',
+          function: {
+            name: 'open_profile',
+            description: 'Open Passenger Profile screen.',
             parameters: { type: 'object', properties: {} },
           },
         },
@@ -563,13 +600,13 @@ export async function handleAuraChat(req: Request, res: Response) {
         }
       }
     } else if (calledTool === 'check_baggage_status') {
-      // AUTONOMOUS: Identify bag, verify belt, open Baggage Guidance
-      finalAction = { type: 'baggage_guidance', autoCheckTag: '176-8927362' };
-      finalReply = "Your bag is currently at Belt 4. The baggage status has been displayed in Baggage Guidance.";
+      // AUTONOMOUS: Identify BOTH bags, report status, open Baggage Guidance
+      finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
+      finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Loaded onto Aircraft (Cargo Hold)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
     } else if (calledTool === 'guide_verify_bag') {
       // GUIDED: Explain arrival at belt and guide barcode verification
-      finalAction = { type: 'baggage_guidance' };
-      finalReply = "Your bag has arrived at Belt 4. Please select **Verify My Bag** in Baggage Guidance to open the barcode scanner, then scan your bag barcode to complete verification.";
+      finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
+      finalReply = "Your bag (Tag 176-8927362) has arrived at Belt 4. Please select **Verify My Bag** in Baggage Guidance to open the barcode scanner, then scan your bag barcode to complete verification.";
     } else if (calledTool === 'get_flight_info') {
       // AUTONOMOUS: Summarize flight details directly
       const gate = passenger?.gate || 'Gate 14B';
@@ -581,9 +618,9 @@ export async function handleAuraChat(req: Request, res: Response) {
       finalAction = { type: 'flight_tracking' };
       finalReply = `Flight **${flight}** departs from **${term}**, **${gate}** (Seat **${seat}**). Boarding countdown: **${countdown}**.`;
     } else if (calledTool === 'guide_live_flight_location') {
-      // GUIDED: Open Flight Tracking, provide explicit manual instructions. DO NOT click external link.
+      // GUIDED: Open Flight Tracking, instruct to click Open Live Flight Location
       finalAction = { type: 'flight_tracking' };
-      finalReply = "I've opened Flight Tracking for you.\n\nTo view your live flight on the map:\n1. Go to the top-right search bar.\n2. Select **Flight by Route**.\n3. Enter **From** and **To**.\n4. Select your flight number.\n5. Scroll down the flight card.\n6. Click **View on Map**.";
+      finalReply = "I've opened Flight Tracking for you. Please click the **'Open Live Flight Location'** button on screen to view real-time 3D satellite trajectory on global radar.\n\nTo view your flight route on the map:\n1. Go to the top-right search bar.\n2. Select **Flight by Route**.\n3. Enter **From** and **To**.\n4. Select your flight number.\n5. Scroll down the flight card and click **View on Map**.";
     } else if (calledTool === 'open_transit_hub') {
       // OPEN_ONLY: Open Transit Services, instruct user. DO NOT click controls.
       finalAction = { type: 'transit_services' };
@@ -596,17 +633,111 @@ export async function handleAuraChat(req: Request, res: Response) {
       // OPEN_ONLY: Open Emergency Contact, instruct user. DO NOT click broadcast.
       finalAction = { type: 'emergency_contact' };
       finalReply = "Emergency Contact is open. Please select a valid reason for the emergency and click Broadcast. Your information will be forwarded to the concerned authorities.";
+    } else if (calledTool === 'open_personal_guardian') {
+      finalAction = { type: 'personal_guardian' };
+      finalReply = "Personal Guardian is open. You can view or configure live travel status updates for your trusted emergency contacts.";
+    } else if (calledTool === 'open_translation') {
+      finalAction = { type: 'translate' };
+      finalReply = "Language Translation is open for real-time two-way voice interpretation.";
+    } else if (calledTool === 'open_boarding_pass') {
+      finalAction = { type: 'boarding_pass' };
+      finalReply = "Your Digital Boarding Pass has been opened.";
+    } else if (calledTool === 'open_profile') {
+      finalAction = { type: 'profile' };
+      finalReply = "Your Passenger Profile has been opened.";
     } else if (calledTool === 'open_event_scheduler') {
       // OPEN_ONLY: Open Event Scheduler
       const ename = toolArgs.event_name || parsedDecision.action_payload?.event_name;
       const etime = toolArgs.event_time || parsedDecision.action_payload?.event_time;
       finalAction = { type: 'event_scheduler', eventName: ename, eventTime: etime };
       finalReply = "I've opened the Event Scheduler. Tap **Save Event** to confirm your reminder.";
-    } else if (!finalReply) {
-      finalReply = 'I am here to assist with your airport journey, navigation, flight information, baggage, transit, food, and emergency support.';
     }
 
-    // ── 8. Persist Assistant Reply + update timestamp ─────────────────────────
+    // ── 8. Reliable Intent Fallback & Protection ──────────────────────────────
+    if (!finalAction) {
+      const msgLower = trimmedMsg.toLowerCase();
+      const replyLower = (finalReply || '').toLowerCase();
+
+      if (
+        msgLower.includes('chest pain') ||
+        msgLower.includes('heart attack') ||
+        msgLower.includes('stalk') ||
+        msgLower.includes('following me') ||
+        msgLower.includes('emergency') ||
+        msgLower.includes('accident') ||
+        msgLower.includes('medical') ||
+        msgLower.includes('police') ||
+        msgLower.includes('bleeding') ||
+        replyLower.includes('emergency contact')
+      ) {
+        finalAction = { type: 'emergency_contact' };
+        if (!finalReply) {
+          finalReply = "Emergency Contact is open. Please select a valid reason for the emergency and click Broadcast. Your information will be forwarded to the concerned authorities.";
+        }
+      } else if (
+        msgLower.includes('bag') ||
+        msgLower.includes('luggage') ||
+        msgLower.includes('suitcase') ||
+        replyLower.includes('baggage')
+      ) {
+        finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
+        if (!finalReply) {
+          finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Loaded onto Aircraft (Cargo Hold)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
+        }
+      } else if (
+        msgLower.includes('live flight') ||
+        msgLower.includes('flight location') ||
+        msgLower.includes('flight radar') ||
+        msgLower.includes('where is my flight') ||
+        msgLower.includes('radar') ||
+        replyLower.includes('flight tracking')
+      ) {
+        finalAction = { type: 'flight_tracking' };
+        if (!finalReply) {
+          finalReply = "I've opened Flight Tracking for you. Please click the **'Open Live Flight Location'** button on screen to view real-time 3D satellite trajectory on global radar.";
+        }
+      } else if (
+        msgLower.includes('transit') ||
+        msgLower.includes('bus') ||
+        msgLower.includes('metro') ||
+        msgLower.includes('cab') ||
+        replyLower.includes('transit')
+      ) {
+        finalAction = { type: 'transit_services' };
+      } else if (
+        msgLower.includes('food') ||
+        msgLower.includes('eat') ||
+        msgLower.includes('restaurant') ||
+        msgLower.includes('meal') ||
+        replyLower.includes('meal delivery')
+      ) {
+        finalAction = { type: 'meal_delivery' };
+      } else if (
+        msgLower.includes('guardian') ||
+        msgLower.includes('mentor') ||
+        msgLower.includes('trusted contact') ||
+        replyLower.includes('personal guardian')
+      ) {
+        finalAction = { type: 'personal_guardian' };
+      } else if (
+        msgLower.includes('translate') ||
+        msgLower.includes('translation') ||
+        msgLower.includes('language') ||
+        replyLower.includes('translation')
+      ) {
+        finalAction = { type: 'translate' };
+      } else if (
+        msgLower.includes('boarding pass') ||
+        msgLower.includes('ticket') ||
+        replyLower.includes('boarding pass')
+      ) {
+        finalAction = { type: 'boarding_pass' };
+      } else if (!finalReply) {
+        finalReply = 'I am here to assist with your airport journey, navigation, flight information, baggage, transit, food, and emergency support.';
+      }
+    }
+
+    // ── 9. Persist Assistant Reply + update timestamp ─────────────────────────
     await prisma.auraMessage.create({
       data: { chatId: activeChatId, role: 'assistant', content: finalReply },
     });

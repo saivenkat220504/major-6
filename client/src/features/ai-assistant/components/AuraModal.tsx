@@ -180,8 +180,10 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     try {
       const data: AuraChat[] = await apiFetch('/api/aura/chats');
       setChats(data);
-      if (data.length > 0) setActiveChatId(data[0].id);
-      else setActiveChatId(null);
+      // Automatically create and select a clean new chat session when opening
+      const newChat: AuraChat = await apiFetch('/api/aura/new-chat', { method: 'POST' });
+      setChats(prev => [newChat, ...prev]);
+      setActiveChatId(newChat.id);
     } catch (e) {
       console.error('[AuraModal] initChats error', e);
     } finally {
@@ -313,14 +315,24 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
           sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
         }
         navigate('/baggage-guidance');
-      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services') {
+      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services' || data.action?.type === 'transit') {
         navigate('/transit-services');
       } else if (data.action?.type === 'flight_tracking') {
         navigate('/flight-tracking');
       } else if (data.action?.type === 'meal_delivery') {
         navigate('/meal-delivery');
-      } else if (data.action?.type === 'emergency_contact') {
+      } else if (data.action?.type === 'emergency_contact' || data.action?.type === 'emergency') {
         navigate('/emergency-contact');
+      } else if (data.action?.type === 'staff_dashboard') {
+        navigate('/emergency-contact/staff-dashboard');
+      } else if (data.action?.type === 'personal_guardian' || data.action?.type === 'personal_mentor') {
+        navigate('/personal-guardian');
+      } else if (data.action?.type === 'translate' || data.action?.type === 'translation') {
+        navigate('/translate');
+      } else if (data.action?.type === 'boarding_pass') {
+        navigate('/boarding-pass');
+      } else if (data.action?.type === 'profile') {
+        navigate('/profile');
       } else if (data.action?.type === 'event_scheduler') {
         navigate('/event-scheduler', { state: { eventName: data.action.eventName, eventTime: data.action.eventTime } });
       }
@@ -420,14 +432,24 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
           sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
         }
         navigate('/baggage-guidance');
-      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services') {
+      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services' || data.action?.type === 'transit') {
         navigate('/transit-services');
       } else if (data.action?.type === 'flight_tracking') {
         navigate('/flight-tracking');
       } else if (data.action?.type === 'meal_delivery') {
         navigate('/meal-delivery');
-      } else if (data.action?.type === 'emergency_contact') {
+      } else if (data.action?.type === 'emergency_contact' || data.action?.type === 'emergency') {
         navigate('/emergency-contact');
+      } else if (data.action?.type === 'staff_dashboard') {
+        navigate('/emergency-contact/staff-dashboard');
+      } else if (data.action?.type === 'personal_guardian' || data.action?.type === 'personal_mentor') {
+        navigate('/personal-guardian');
+      } else if (data.action?.type === 'translate' || data.action?.type === 'translation') {
+        navigate('/translate');
+      } else if (data.action?.type === 'boarding_pass') {
+        navigate('/boarding-pass');
+      } else if (data.action?.type === 'profile') {
+        navigate('/profile');
       } else if (data.action?.type === 'event_scheduler') {
         navigate('/event-scheduler', { state: { eventName: data.action.eventName, eventTime: data.action.eventTime } });
       }
