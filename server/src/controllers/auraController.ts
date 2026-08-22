@@ -136,7 +136,7 @@ AGENT AUTHORITY & PERMISSION MODEL
 1. AUTONOMOUS ACTIONS (Aura can execute directly):
    - "find_route": Route planning between source and destination inside the terminal. Extract the EXACT source and destination provided by the user (e.g. if the user says "entrance 10", extract source as "Entrance 10"). Do NOT substitute other locations (like "Main Entrance").
    - "check_baggage_status": Retrieve real-time baggage status for all checked bags belonging to the passenger (Bag 1: Tag 176-8927361 Loaded onto Aircraft, Bag 2: Tag 176-8927362 Arrived at Belt 4).
-   - "get_flight_info": Provide flight details (gate, terminal, seat, boarding time countdown) directly from passenger context.
+   - "get_flight_info": Retrieve and provide passenger travel details (flight number, seat, gate, terminal, origin, destination, boarding countdown) directly from the scanned ticket data. ALWAYS call get_flight_info whenever the user asks about their flight number, seat, gate, terminal, destination, origin, ticket, or boarding info.
 
 2. GUIDED ACTIONS (Aura opens the feature and provides step-by-step guidance; Aura MUST NOT perform restricted actions):
    - "guide_live_flight_location": Used when user asks to see live satellite flight location or radar. Open Flight Tracking and instruct the user to click the 'Open Live Flight Location' button on screen to view 3D global trajectory. Also explain how to search by route. DO NOT click 'Open Live Flight Location' autonomously.
@@ -167,8 +167,7 @@ If the user asks something completely unrelated to their airport journey (e.g., 
 "Please ask something relevant to your airport journey."
 Do NOT call any tool for out-of-scope questions.
 
-Relevant questions include: flights, boarding, gates, terminals, baggage, navigation, transit, food, airport facilities, emergency assistance, personal safety guardian, language translation, airport services, and journey planning.
-Note: Any navigation, directions, or route request (even with unknown or typo location names like 'Entrance 999' or 'Gate Z99') is ALWAYS a relevant journey question and must use 'find_route' with the extracted names so the validation engine can check them.
+Relevant questions include: flight number, destination, departure, seat, gate, terminal, boarding time, ticket details, luggage/baggage, navigation, transit, food, airport facilities, emergency assistance, personal safety guardian, language translation, and journey planning. All passenger ticket and flight inquiries are 100% relevant and must be answered from the scanned ticket context.
 
 ================================================================================
 RESPONSE FORMAT
@@ -189,19 +188,35 @@ Do not reveal internal reasoning or chain-of-thought. Provide only the concise J
 
 // ── Context Builders ─────────────────────────────────────────────────────────
 function buildPassengerContext(passenger: Record<string, any>): string {
-  return `\n--- Passenger Details ---
-Name: ${passenger.passenger_name || 'N/A'}
-Ticket ID: ${passenger.ticket_id || 'N/A'}
-Flight: ${passenger.flight_id || passenger.flight_number || 'N/A'}
-Date: ${passenger.date || 'Today'}
-From: ${passenger.from || 'N/A'}
-To: ${passenger.to || 'N/A'}
-Terminal: ${passenger.terminal || 'Terminal 2'}
-Seat: ${passenger.seat || '12A (Window)'}
-Gate: ${passenger.gate || 'Gate 14B'}
-Boarding Time: ${passenger.boarding_time || '01h 18m remaining'}
+  if (!passenger || Object.keys(passenger).length === 0) {
+    return '\n--- Passenger Details: No active ticket scanned ---';
+  }
+  const name = passenger.passenger_name || passenger.name || 'Passenger';
+  const ticketId = passenger.ticket_id || passenger.id || 'N/A';
+  const flightId = passenger.flight_id || passenger.flight_number || passenger.flight || 'N/A';
+  const from = passenger.from || 'N/A';
+  const to = passenger.to || 'N/A';
+  const terminal = passenger.terminal || 'Terminal 1';
+  const seat = passenger.seat || passenger.seat_no || 'N/A';
+  const gate = passenger.gate || 'Gate 14B';
+  const date = passenger.date || 'Today';
+  const zone = passenger.zone || 'Zone A';
+  const boardingTime = passenger.boarding_time || '01h 18m remaining';
+
+  return `\n--- Scanned Ticket & Travel Details ---
+Passenger Name: ${name}
+Ticket ID: ${ticketId}
+Flight Number: ${flightId}
+Date of Travel: ${date}
+Departure Airport (From): ${from}
+Destination Airport (To): ${to}
+Terminal: ${terminal}
+Assigned Seat: ${seat}
+Departure Gate: ${gate}
+Boarding Zone: ${zone}
+Boarding Time: ${boardingTime}
 Checked Bags: 2 (Bag 1: Tag 176-8927361, Bag 2: Tag 176-8927362)
--------------------------`;
+---------------------------------------`;
 }
 
 function buildFlightTrackingContext(flightTracking: any): string {
@@ -608,15 +623,18 @@ export async function handleAuraChat(req: Request, res: Response) {
       finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
       finalReply = "Your bag (Tag 176-8927362) has arrived at Belt 4. Please select **Verify My Bag** in Baggage Guidance to open the barcode scanner, then scan your bag barcode to complete verification.";
     } else if (calledTool === 'get_flight_info') {
-      // AUTONOMOUS: Summarize flight details directly
-      const gate = passenger?.gate || 'Gate 14B';
-      const flight = passenger?.flight_id || passenger?.flight_number || 'AI-102';
-      const seat = passenger?.seat || '12A (Window)';
-      const term = passenger?.terminal || 'Terminal 2';
-      const countdown = flightTrackingData?.countdown || '01h 18m';
+      // AUTONOMOUS: Summarize flight details directly from scanned ticket data
+      const gate = passenger?.gate || flightTrackingData?.gate || 'Gate 14B';
+      const flight = passenger?.flight_id || passenger?.flight_number || passenger?.flight || 'AI-102';
+      const seat = passenger?.seat || passenger?.seat_no || '18A';
+      const term = passenger?.terminal || 'Terminal 1';
+      const from = passenger?.from || 'HYD';
+      const to = passenger?.to || 'DEL';
+      const name = passenger?.passenger_name || passenger?.name || 'Passenger';
+      const countdown = flightTrackingData?.countdown || passenger?.boarding_time || '01h 18m';
 
       finalAction = { type: 'flight_tracking' };
-      finalReply = `Flight **${flight}** departs from **${term}**, **${gate}** (Seat **${seat}**). Boarding countdown: **${countdown}**.`;
+      finalReply = `Passenger **${name}**, your flight is **${flight}** (${from} → ${to}) departing from **${term}**, **${gate}** (Seat **${seat}**). Boarding countdown: **${countdown}**.`;
     } else if (calledTool === 'guide_live_flight_location') {
       // GUIDED: Open Flight Tracking, instruct to click Open Live Flight Location
       finalAction = { type: 'flight_tracking' };
@@ -688,13 +706,37 @@ export async function handleAuraChat(req: Request, res: Response) {
         msgLower.includes('live flight') ||
         msgLower.includes('flight location') ||
         msgLower.includes('flight radar') ||
-        msgLower.includes('where is my flight') ||
         msgLower.includes('radar') ||
         replyLower.includes('flight tracking')
       ) {
         finalAction = { type: 'flight_tracking' };
         if (!finalReply) {
           finalReply = "I've opened Flight Tracking for you. Please click the **'Open Live Flight Location'** button on screen to view real-time 3D satellite trajectory on global radar.";
+        }
+      } else if (
+        msgLower.includes('flight number') ||
+        msgLower.includes('my flight') ||
+        msgLower.includes('where am i flying') ||
+        msgLower.includes('flying to') ||
+        msgLower.includes('my seat') ||
+        msgLower.includes('which gate') ||
+        msgLower.includes('my gate') ||
+        msgLower.includes('my terminal') ||
+        msgLower.includes('my ticket') ||
+        replyLower.includes('flight info')
+      ) {
+        finalAction = { type: 'flight_tracking' };
+        const gate = passenger?.gate || flightTrackingData?.gate || 'Gate 14B';
+        const flight = passenger?.flight_id || passenger?.flight_number || passenger?.flight || 'AI-102';
+        const seat = passenger?.seat || passenger?.seat_no || '18A';
+        const term = passenger?.terminal || 'Terminal 1';
+        const from = passenger?.from || 'HYD';
+        const to = passenger?.to || 'DEL';
+        const name = passenger?.passenger_name || passenger?.name || 'Passenger';
+        const countdown = flightTrackingData?.countdown || passenger?.boarding_time || '01h 18m';
+
+        if (!finalReply || finalReply.includes('relevant')) {
+          finalReply = `Passenger **${name}**, your flight is **${flight}** (${from} → ${to}) departing from **${term}**, **${gate}** (Seat **${seat}**). Boarding countdown: **${countdown}**.`;
         }
       } else if (
         msgLower.includes('transit') ||

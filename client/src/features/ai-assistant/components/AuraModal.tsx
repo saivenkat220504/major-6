@@ -107,8 +107,20 @@ function MsgBubble({ msg }: { msg: DisplayMessage }) {
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function AuraModal({ open, onClose }: AuraModalProps) {
   const navigate = useNavigate();
-  const passenger = getPassengerData();
+  const [passenger, setPassenger] = useState<Record<string, any> | null>(() => getPassengerData());
   const passengerName = getPassengerName(passenger);
+
+  // Sync passenger boarding pass whenever modal opens or ticket is scanned
+  useEffect(() => {
+    const refreshPassenger = () => {
+      setPassenger(getPassengerData());
+    };
+    if (open) {
+      refreshPassenger();
+    }
+    window.addEventListener('ticket-scanned-event', refreshPassenger);
+    return () => window.removeEventListener('ticket-scanned-event', refreshPassenger);
+  }, [open]);
 
   // ── State ─────────────────────────────────────────────────────────────────
   const [chats, setChats] = useState<AuraChat[]>([]);
@@ -253,7 +265,7 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     // Optimistic user bubble
     const userMsg: DisplayMessage = { id: nextId(), role: 'user', text, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
-    setIsLoading(true);
+    const currentPassenger = getPassengerData() || passenger;
 
     try {
       const data = await apiFetch('/api/aura/chat', {
@@ -262,10 +274,10 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
         body: JSON.stringify({
           chatId,
           message: text,
-          passenger,
+          passenger: currentPassenger,
           flightTrackingData: {
             countdown: "01h 18m",
-            gate: "Gate A12",
+            gate: currentPassenger?.gate || "Gate 14B",
             status: "Boarding Soon"
           },
           destinations: pois.map(p => {
@@ -383,7 +395,7 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
 
     const userMsg: DisplayMessage = { id: nextId(), role: 'user', text, timestamp: new Date() };
     setMessages(prev => [...prev, userMsg]);
-    setIsLoading(true);
+    const currentPassenger = getPassengerData() || passenger;
 
     try {
       const data = await apiFetch('/api/aura/chat', {
@@ -392,8 +404,12 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
         body: JSON.stringify({
           chatId,
           message: text,
-          passenger,
-          flightTrackingData: { countdown: '01h 18m', gate: 'Gate A12', status: 'Boarding Soon' },
+          passenger: currentPassenger,
+          flightTrackingData: {
+            countdown: '01h 18m',
+            gate: currentPassenger?.gate || 'Gate 14B',
+            status: 'Boarding Soon',
+          },
           destinations: pois.map(p => {
             let path: any[] = [];
             try { path = findShortestPath('main_entrance', p.id); } catch { }
