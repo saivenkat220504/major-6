@@ -7,6 +7,7 @@ import {
   SUPPORTED_LANGUAGES,
   TurnState,
 } from '../types/translation.types';
+import { cleanSpeechTranscript } from '../../../utils/speechUtils';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Browser SpeechRecognition type shim
@@ -384,28 +385,16 @@ export function useVoiceConversation(): VoiceConversationState & VoiceConversati
     console.log(`[Recognition] Starting lang=${langOption.bcp47} speaker=${currentTurn}`);
 
     recognition.onresult = (event: any) => {
-      let currentFinal = '';
-      let currentInterim = '';
-      
-      // Loop through all results from the beginning of this continuous session
-      for (let i = 0; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) {
-          currentFinal += r[0].transcript;
-        } else {
-          currentInterim += r[0].transcript;
-        }
-      }
-      
-      finalTranscriptRef.current = currentFinal;
-      // liveTranscript contains everything (final sentences + current interim)
-      liveTranscriptRef.current = currentFinal + currentInterim;
-      
-      setFinalTranscript(currentFinal);
-      setLiveTranscript(currentFinal + currentInterim);
-      
-      if (currentFinal) {
-        console.log(`[Recognition] Final accumulated: "${currentFinal}"`);
+      const { finalTranscript: cFinal, liveTranscript: cLive } = cleanSpeechTranscript(event.results);
+
+      finalTranscriptRef.current = cFinal;
+      liveTranscriptRef.current = cLive;
+
+      setFinalTranscript(cFinal);
+      setLiveTranscript(cLive);
+
+      if (cFinal) {
+        console.log(`[Recognition] Final accumulated: "${cFinal}"`);
       }
     };
 

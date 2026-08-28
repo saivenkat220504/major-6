@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { X, Send, Loader, Plus, MessageSquare, Menu, Trash2, Mic, Square } from 'lucide-react';
 import { pois, findShortestPath } from '../../navigation/data/mapData';
+import { cleanSpeechTranscript } from '../../../utils/speechUtils';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface AuraChat {
@@ -507,16 +508,10 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     recognitionRef.current = recognition;
 
     recognition.onresult = (event: any) => {
-      let currentFinal = '';
-      let currentInterim = '';
-      for (let i = 0; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) currentFinal += r[0].transcript;
-        else currentInterim += r[0].transcript;
-      }
-      finalTranscriptRef.current = currentFinal;
-      liveTranscriptRef.current = currentFinal + currentInterim;
-      setLiveTranscript(currentFinal + currentInterim);
+      const { finalTranscript, liveTranscript } = cleanSpeechTranscript(event.results);
+      finalTranscriptRef.current = finalTranscript;
+      liveTranscriptRef.current = liveTranscript;
+      setLiveTranscript(liveTranscript);
     };
 
     recognition.onerror = (event: any) => {
