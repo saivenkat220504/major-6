@@ -38,22 +38,93 @@ function buildHints(): Map<DecodeHintType, any> {
 }
 
 /**
- * Loads a File object into an ImageData using FileReader + Canvas.
- * This bypasses all URL/blob/content:// URI issues on Android WebView.
- * Works reliably with PNG, JPG, WEBP from the Android file picker.
+ * Robust, multi-layered image loading pipeline for Android WebView & Mobile Browsers.
+ * 
+ * Step 1: Try native `createImageBitmap(file)` — zero DOM, zero URL, zero base64 overhead.
+ *         Supported natively in Chromium / Android WebView / Safari 15+.
+ * Step 2: Try `URL.createObjectURL(file)` with HTMLImageElement.
+ * Step 3: Try `FileReader.readAsDataURL(file)` with HTMLImageElement.
  */
-function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+async function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  // Method 1: createImageBitmap (Native Android WebView / Browser API)
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx && canvas.width > 0 && canvas.height > 0) {
+        ctx.drawImage(bitmap, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        bitmap.close();
+        return { data: imageData.data, width: canvas.width, height: canvas.height };
+      }
+    } catch (err) {
+      console.warn('[BarcodeDecoder] createImageBitmap failed, trying URL fallback:', err);
+    }
+  }
+
+  // Method 2: HTMLImageElement via Blob URL
+  try {
+    const imageData = await loadImageViaBlobUrl(file);
+    return imageData;
+  } catch (err) {
+    console.warn('[BarcodeDecoder] Blob URL load failed, trying DataURL fallback:', err);
+  }
+
+  // Method 3: FileReader readAsDataURL fallback
+  return loadViaFileReader(file);
+}
+
+function loadImageViaBlobUrl(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width;
+        canvas.height = img.naturalHeight || img.height;
+        URL.revokeObjectURL(objectUrl);
+
+        if (canvas.width === 0 || canvas.height === 0) {
+          return reject(new Error('Image has zero dimensions'));
+        }
+
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return reject(new Error('Canvas 2D context unavailable'));
+
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        resolve({ data: imageData.data, width: canvas.width, height: canvas.height });
+      } catch (e: any) {
+        URL.revokeObjectURL(objectUrl);
+        reject(e);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Blob URL image load failed'));
+    };
+
+    img.src = objectUrl;
+  });
+}
+
+function loadViaFileReader(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 
     reader.onload = (event) => {
       const result = event.target?.result;
       if (!result || typeof result !== 'string') {
-        return reject(new Error('FileReader produced no output for the image file'));
+        return reject(new Error('FileReader produced no output'));
       }
 
       const img = new Image();
-
       img.onload = () => {
         try {
           const canvas = document.createElement('canvas');
@@ -61,43 +132,31 @@ function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; wid
           canvas.height = img.naturalHeight || img.height;
 
           if (canvas.width === 0 || canvas.height === 0) {
-            return reject(new Error('Image has zero dimensions after loading'));
+            return reject(new Error('Image has zero dimensions'));
           }
 
           const ctx = canvas.getContext('2d', { willReadFrequently: true });
-          if (!ctx) {
-            return reject(new Error('Could not create 2D canvas context'));
-          }
+          if (!ctx) return reject(new Error('Canvas 2D context unavailable'));
 
           ctx.drawImage(img, 0, 0);
           const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
           resolve({ data: imageData.data, width: canvas.width, height: canvas.height });
         } catch (e: any) {
-          reject(new Error(`Canvas draw failed: ${e.message}`));
+          reject(e);
         }
       };
 
       img.onerror = () => {
-        reject(new Error(
-          'Image element failed to load from FileReader data. ' +
-          'The file may be corrupted or the MIME type is unsupported.'
-        ));
+        reject(new Error('Image element failed to parse FileReader data URL. File format may be unsupported.'));
       };
 
-      // Use data URL (base64) from FileReader — works on ALL platforms including
-      // Android WebView with content:// URIs, because we never use URL.createObjectURL
       img.src = result;
     };
 
     reader.onerror = () => {
-      reject(new Error(
-        `FileReader error: could not read the selected file. ` +
-        `Error code: ${reader.error?.code ?? 'unknown'} — ` +
-        `${reader.error?.message ?? 'check file permissions'}`
-      ));
+      reject(new Error(`FileReader failed to read selected file`));
     };
 
-    // Read as data URL (base64-encoded) - safe for any MIME type on Android
     reader.readAsDataURL(file);
   });
 }
@@ -105,12 +164,10 @@ function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; wid
 /**
  * Converts RGBA pixel data (from canvas.getImageData) into the Uint8ClampedArray
  * of luminance (grayscale) bytes that ZXing's RGBLuminanceSource expects.
- * ZXing expects a flat array of [R, G, B] triplets (no alpha).
  */
 function rgbaToRGB(rgba: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
   const rgb = new Uint8ClampedArray(width * height * 3);
   for (let i = 0, j = 0; i < rgba.length; i += 4, j += 3) {
-    // If pixel is fully transparent, treat as white background (255)
     const alpha = rgba[i + 3] / 255;
     rgb[j] = Math.round(rgba[i] * alpha + 255 * (1 - alpha));
     rgb[j + 1] = Math.round(rgba[i + 1] * alpha + 255 * (1 - alpha));
@@ -120,8 +177,7 @@ function rgbaToRGB(rgba: Uint8ClampedArray, width: number, height: number): Uint
 }
 
 /**
- * Attempt to decode a barcode from given pixel data using ZXing directly
- * (no browser image loading involved — purely pixel data manipulation).
+ * Attempt to decode a barcode from given pixel data using ZXing directly.
  */
 function decodeFromPixels(
   rgbaData: Uint8ClampedArray,
@@ -131,7 +187,7 @@ function decodeFromPixels(
   const hints = buildHints();
   const rgb = rgbaToRGB(rgbaData, width, height);
 
-  // PDF417 reader (dedicated)
+  // Dedicated PDF417 reader
   try {
     const luminanceSource = new RGBLuminanceSource(rgb, width, height);
     const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
@@ -140,7 +196,7 @@ function decodeFromPixels(
     if (result?.getText()) return result.getText();
   } catch { /* try next */ }
 
-  // Multi-format reader (QR, Code128, etc. fallback)
+  // Multi-format reader fallback
   try {
     const luminanceSource = new RGBLuminanceSource(rgb, width, height);
     const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
@@ -154,8 +210,7 @@ function decodeFromPixels(
 }
 
 /**
- * Applies image processing transformations to a canvas context and returns
- * modified RGBA pixel data. Used for enhanced multi-pass decoding attempts.
+ * Applies image processing transformations for multi-pass decoding attempts.
  */
 function applyTransform(
   sourceRgba: Uint8ClampedArray,
@@ -175,7 +230,6 @@ function applyTransform(
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
 
-    // Reconstruct source canvas from pixel data
     const srcCanvas = document.createElement('canvas');
     srcCanvas.width = srcWidth;
     srcCanvas.height = srcHeight;
@@ -248,7 +302,7 @@ export function parseBoardingPassBarcode(rawInput: string): BoardingPassData {
   }
 
   // ── 2. Standard IATA BCBP (Bar Coded Boarding Pass) Format ─────────────────
-  if (raw[0] === 'M' && /^M[1-9]/.test(raw)) {
+  if (raw[0] === 'M') {
     let nameRaw = '';
     let pnr = 'N/A';
     let fromCode = 'N/A';
@@ -258,7 +312,7 @@ export function parseBoardingPassBarcode(rawInput: string): BoardingPassData {
     let julianStr = '';
     let seat = 'N/A';
 
-    if (raw.length >= 48) {
+    if (raw.length >= 45) {
       nameRaw = raw.substring(2, 22).trim();
       pnr = raw.substring(23, 30).trim();
       fromCode = raw.substring(30, 33).trim().toUpperCase();
@@ -325,25 +379,8 @@ export function parseBoardingPassBarcode(rawInput: string): BoardingPassData {
 
 /**
  * Decodes a PDF417 (or multi-format barcode) from an uploaded image File.
- *
- * ROOT CAUSE FIX for "failed to load barcode image file":
- * - The old implementation used URL.createObjectURL() which is unreliable on
- *   Android WebView with content:// URIs from the file picker.
- * - The old code also called URL.revokeObjectURL() BEFORE ZXing readers finished
- *   using the image URL.
- * - The old canvas enhancement pass called decodeFromImageElement(img) on the
- *   original img element instead of decoding from the processed canvas pixels.
- *
- * NEW APPROACH:
- * 1. Use FileReader.readAsDataURL() — produces a base64 data URL that works on
- *    ALL platforms including Android content:// URIs.
- * 2. Draw the loaded image to a canvas and extract raw RGBA pixel data.
- * 3. Pass pixel data directly to ZXing via RGBLuminanceSource + HybridBinarizer
- *    + BinaryBitmap — bypasses all browser URL/network loading entirely.
- * 4. Multi-pass: try original, then rotated (90°/180°/270°), then contrast-enhanced.
  */
 export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> {
-  // Validate the file object exists and is an image
   if (!file) {
     throw new Error('No file provided to barcode decoder');
   }
@@ -352,8 +389,7 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
     throw new Error('The selected file is empty (0 bytes). Please select a valid image.');
   }
 
-  // Step 1: Load file → base64 data URL → canvas → RGBA pixels
-  // This is the key fix: FileReader.readAsDataURL is safe on Android WebView
+  // Step 1: Multi-layered image loading pipeline (createImageBitmap -> BlobURL -> FileReader)
   let pixelData: { data: Uint8ClampedArray; width: number; height: number };
   try {
     pixelData = await loadFileToImageData(file);
@@ -386,8 +422,7 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
   // Step 4: No barcode found
   throw new Error(
     'No valid PDF417 boarding pass barcode was detected in the image. ' +
-    'Please ensure you are uploading a BOARDING PASS barcode image (not a screenshot of the app). ' +
-    'The barcode should be clearly visible, well-lit, in focus, and not cropped.'
+    'Please ensure the barcode is clearly visible, well-lit, and in focus.'
   );
 }
 
