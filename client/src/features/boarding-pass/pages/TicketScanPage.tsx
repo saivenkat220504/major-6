@@ -11,13 +11,13 @@ import {
   Building2,
   Globe,
   ChevronDown,
-  RefreshCw,
   X,
   FlipHorizontal,
-  FileText,
+  Zap,
+  ZapOff,
 } from 'lucide-react';
+import { readBarcodesFromImageData } from 'zxing-wasm';
 import {
-  BrowserPDF417Reader,
   BrowserMultiFormatReader,
   BarcodeFormat,
   DecodeHintType,
@@ -33,10 +33,72 @@ interface TicketScanPageProps {
   onScanComplete?: (data: BoardingPassData) => void;
 }
 
+/**
+ * Plays a subtle, pleasant synthetic confirmation chime (like GPay / Paytm)
+ * on successful barcode verification using Web AudioContext.
+ */
+function playScanSuccessChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    // Play two quick ascending tones (A5 -> C#6)
+    const now = ctx.currentTime;
+    osc.frequency.setValueAtTime(880, now); // A5
+    osc.frequency.setValueAtTime(1108.73, now + 0.08); // C#6
+
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.2);
+  } catch (e) {
+    // Audio Context restricted or unavailable
+  }
+}
+
+/**
+ * 3x3 Median Filter pre-pass for live video frames to strip moiré / scanlines
+ * when scanning a barcode shown on a computer screen or monitor.
+ */
+function applyMedianFilter(srcRgba: Uint8ClampedArray, w: number, h: number): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(srcRgba.length);
+  const srcL = new Uint8Array(w * h);
+
+  for (let i = 0, j = 0; i < srcRgba.length; i += 4, j++) {
+    srcL[j] = Math.round(0.299 * srcRgba[i] + 0.587 * srcRgba[i + 1] + 0.114 * srcRgba[i + 2]);
+  }
+
+  const win = new Uint8Array(9);
+  for (let y = 1; y < h - 1; y += 2) { // Step 2 for high-speed sampling
+    for (let x = 1; x < w - 1; x += 2) {
+      let idx = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          win[idx++] = srcL[(y + dy) * w + (x + dx)];
+        }
+      }
+      win.sort();
+      const m = win[4];
+      const outIdx = (y * w + x) * 4;
+      out[outIdx] = m; out[outIdx + 1] = m; out[outIdx + 2] = m; out[outIdx + 3] = 255;
+    }
+  }
+  return out;
+}
+
 export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) {
   const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const { currentLang, changeLanguage, getLanguageObj } = useLanguage();
 
   const [isProcessing, setIsProcessing] = useState(false);
@@ -47,11 +109,15 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
   // Live Camera Scanner States
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [currentDeviceId, setCurrentDeviceId] = useState<string | undefined>(undefined);
+  const [currentDeviceId, setCurrentDeviceId] = useState<string | null>(null);
   const [cameraLoading, setCameraLoading] = useState(false);
+  const [isTorchSupported, setIsTorchSupported] = useState(false);
+  const [isTorchOn, setIsTorchOn] = useState(false);
 
-  // Reader reference for live stream
-  const liveReaderRef = useRef<BrowserMultiFormatReader | null>(null);
+  // Stream & Loop References
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const scanLoopTimerRef = useRef<any>(null);
+  const isScanningActiveRef = useRef(false);
 
   const [manualTicket, setManualTicket] = useState({
     passenger_name: '',
@@ -67,6 +133,15 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
   const currentLangObj = getLanguageObj();
 
   const handleSelectTicket = (data: BoardingPassData) => {
+    // Stop scanning loop immediately
+    isScanningActiveRef.current = false;
+
+    // Haptic & Audio Confirmation Feedback (GPay-like)
+    try {
+      if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+    } catch {}
+    playScanSuccessChime();
+
     // Ensure terminal is always enforced as 'T1'
     const finalData: BoardingPassData = {
       ...data,
@@ -77,7 +152,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
     sessionStorage.setItem('ticketScanned', 'true');
     setScannedSuccess(finalData);
 
-    // Stop camera stream if active
+    // Stop camera stream
     stopCamera();
 
     // Notify application that ticket has been scanned
@@ -89,82 +164,121 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
       } else {
         navigate('/');
       }
-    }, 900);
+    }, 850);
   };
 
-  // ── Live Camera Scanning Implementation ──────────────────────────────────────
+  // ── Ultra-Fast GPay-Style Camera Scanner Engine ─────────────────────────────
 
   const stopCamera = () => {
-    if (liveReaderRef.current) {
-      try {
-        liveReaderRef.current.reset();
-      } catch (e) {
-        console.warn('Error resetting live reader:', e);
-      }
-      liveReaderRef.current = null;
+    isScanningActiveRef.current = false;
+
+    if (scanLoopTimerRef.current) {
+      clearInterval(scanLoopTimerRef.current);
+      scanLoopTimerRef.current = null;
     }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
     setIsCameraActive(false);
     setCameraLoading(false);
+    setIsTorchOn(false);
+    setIsTorchSupported(false);
   };
 
   const startCamera = async (deviceId?: string) => {
     setError(null);
     setCameraLoading(true);
     setIsCameraActive(true);
+    isScanningActiveRef.current = true;
 
     try {
-      const hints = new Map();
-      hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-        BarcodeFormat.PDF_417,
-        BarcodeFormat.QR_CODE,
-        BarcodeFormat.CODE_128,
-        BarcodeFormat.CODE_39,
-      ]);
-      hints.set(DecodeHintType.TRY_HARDER, true);
+      // 1. Enumerate available video devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+      setVideoDevices(videoInputs);
 
-      const reader = new BrowserMultiFormatReader(hints, 400);
-      liveReaderRef.current = reader;
-
-      const devices = await reader.listVideoInputDevices();
-      setVideoDevices(devices);
-
-      let targetDevice = deviceId;
-      if (!targetDevice && devices.length > 0) {
-        // Default to back/rear camera on mobile devices
-        const backCamera = devices.find((d) =>
+      let targetId = deviceId;
+      if (!targetId && videoInputs.length > 0) {
+        const backCam = videoInputs.find((d) =>
           d.label.toLowerCase().includes('back') ||
           d.label.toLowerCase().includes('rear') ||
           d.label.toLowerCase().includes('environment')
         );
-        targetDevice = backCamera ? backCamera.deviceId : devices[0].deviceId;
+        targetId = backCam ? backCam.deviceId : videoInputs[0].deviceId;
       }
-      setCurrentDeviceId(targetDevice);
+      setCurrentDeviceId(targetId || null);
 
-      if (!videoRef.current) {
-        setCameraLoading(false);
-        return;
-      }
+      // 2. High Definition WebRTC Constraints with Continuous Auto-Focus (1080p/720p)
+      const constraints: MediaStreamConstraints = {
+        audio: false,
+        video: {
+          deviceId: targetId ? { exact: targetId } : undefined,
+          facingMode: targetId ? undefined : { ideal: 'environment' },
+          width: { ideal: 1920, min: 1280 },
+          height: { ideal: 1080, min: 720 },
+          advanced: [{ focusMode: 'continuous' } as any],
+        },
+      };
 
-      await reader.decodeFromVideoDevice(
-        targetDevice ?? null,
-        videoRef.current,
-        (result, decodeErr) => {
-          if (result && result.getText()) {
-            try {
-              const parsed = parseBoardingPassBarcode(result.getText());
-              handleSelectTicket(parsed);
-            } catch (err: any) {
-              console.warn('Scanned data parse error:', err);
-              setError(err.message || 'Scanned barcode does not contain valid boarding pass data.');
-            }
-          }
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      mediaStreamRef.current = stream;
+
+      // Check if torch/flashlight is supported
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
+        if (capabilities.torch) {
+          setIsTorchSupported(true);
         }
-      );
+      }
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+
       setCameraLoading(false);
+
+      // 3. Ultra-Fast High-Frequency Scan Sampling Loop (70ms interval = ~14 FPS sampling)
+      startScanSamplingLoop();
     } catch (err: any) {
-      console.error('Camera initialization failed:', err);
-      setError(err.message || 'Unable to access device camera. Please grant camera permissions or upload an image file.');
-      stopCamera();
+      console.error('High-speed camera setup error:', err);
+      // Fallback attempt: try simpler constraints
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+        mediaStreamRef.current = fallbackStream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = fallbackStream;
+          await videoRef.current.play();
+        }
+        setCameraLoading(false);
+        startScanSamplingLoop();
+      } catch (fallbackErr: any) {
+        setError(fallbackErr.message || 'Unable to access camera. Please grant camera permissions or upload an image file.');
+        stopCamera();
+      }
+    }
+  };
+
+  const toggleTorch = async () => {
+    if (!mediaStreamRef.current) return;
+    const track = mediaStreamRef.current.getVideoTracks()[0];
+    if (!track) return;
+
+    try {
+      const nextTorch = !isTorchOn;
+      await (track as any).applyConstraints({
+        advanced: [{ torch: nextTorch }],
+      });
+      setIsTorchOn(nextTorch);
+    } catch (err) {
+      console.warn('Failed to toggle torch:', err);
     }
   };
 
@@ -175,6 +289,106 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
     const nextDevice = videoDevices[nextIndex].deviceId;
     stopCamera();
     startCamera(nextDevice);
+  };
+
+  /**
+   * Ultra-fast continuous frame sampling loop.
+   * Draws video frame to canvas and attempts WASM + ZXing Library decoding.
+   */
+  const startScanSamplingLoop = () => {
+    if (scanLoopTimerRef.current) clearInterval(scanLoopTimerRef.current);
+
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.PDF_417,
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+    ]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+
+    const zxingLibReader = new BrowserMultiFormatReader(hints);
+
+    let isFrameBusy = false;
+
+    scanLoopTimerRef.current = setInterval(async () => {
+      if (!isScanningActiveRef.current || isFrameBusy) return;
+      const video = videoRef.current;
+      if (!video || video.readyState < 2) return;
+
+      isFrameBusy = true;
+
+      try {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (vw === 0 || vh === 0) {
+          isFrameBusy = false;
+          return;
+        }
+
+        // Draw video frame to canvas
+        let canvas = canvasRef.current;
+        if (!canvas) {
+          canvas = document.createElement('canvas');
+          canvasRef.current = canvas;
+        }
+        canvas.width = vw;
+        canvas.height = vh;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) {
+          isFrameBusy = false;
+          return;
+        }
+
+        ctx.drawImage(video, 0, 0, vw, vh);
+        const imgData = ctx.getImageData(0, 0, vw, vh);
+
+        // Pass 1: zxing-wasm WebAssembly decode on raw frame
+        const wasmResults = await readBarcodesFromImageData(imgData, {
+          formats: ['PDF417', 'QRCode', 'Code128', 'Code39'],
+          tryHarder: true,
+          tryRotate: true,
+        });
+
+        if (wasmResults && wasmResults.length > 0 && wasmResults[0].text) {
+          const parsed = parseBoardingPassBarcode(wasmResults[0].text);
+          handleSelectTicket(parsed);
+          isFrameBusy = false;
+          return;
+        }
+
+        // Pass 2: zxing-wasm on 3x3 median filtered frame (for monitor screen scanlines)
+        const medianData = applyMedianFilter(imgData.data, vw, vh);
+        const wasmMedianRes = await readBarcodesFromImageData(
+          { data: medianData, width: vw, height: vh },
+          { formats: ['PDF417', 'QRCode', 'Code128'], tryHarder: true }
+        );
+
+        if (wasmMedianRes && wasmMedianRes.length > 0 && wasmMedianRes[0].text) {
+          const parsed = parseBoardingPassBarcode(wasmMedianRes[0].text);
+          handleSelectTicket(parsed);
+          isFrameBusy = false;
+          return;
+        }
+
+        // Pass 3: BrowserMultiFormatReader fallback on video element directly
+        try {
+          const libRes = await zxingLibReader.decodeFromVideoElement(video);
+          if (libRes && libRes.getText()) {
+            const parsed = parseBoardingPassBarcode(libRes.getText());
+            handleSelectTicket(parsed);
+            isFrameBusy = false;
+            return;
+          }
+        } catch {
+          // Keep loop running smoothly
+        }
+      } catch (err) {
+        // Continue scan loop
+      } finally {
+        isFrameBusy = false;
+      }
+    }, 75); // 75ms high-frequency sampling (~13 FPS)
   };
 
   useEffect(() => {
@@ -220,7 +434,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
       date: manualTicket.date || new Date().toISOString().split('T')[0],
       from: (manualTicket.from || 'HYD').trim().toUpperCase(),
       to: (manualTicket.to || 'DEL').trim().toUpperCase(),
-      terminal: 'T1', // Always T1
+      terminal: 'T1',
       seat: (manualTicket.seat || '14B').trim().toUpperCase(),
     };
 
@@ -229,6 +443,9 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
 
   return (
     <div className="min-h-screen bg-[#06121F] text-white flex flex-col justify-between p-4 sm:p-6 font-sans">
+      {/* Hidden offscreen canvas for high-speed frame processing */}
+      <canvas ref={canvasRef} className="hidden" />
+
       {/* Top Header Bar */}
       <header className="max-w-5xl mx-auto w-full flex items-center justify-between py-4 border-b border-white/10">
         <div className="flex items-center gap-3">
@@ -241,7 +458,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
           </div>
         </div>
 
-        {/* Language Selector in Top Right Header */}
+        {/* Language Selector */}
         <div className="relative">
           <button
             onClick={() => setShowLangDropdown(!showLangDropdown)}
@@ -329,7 +546,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
           </div>
         )}
 
-        {/* ── Live Camera Modal / Inline Viewfinder ────────────────────────── */}
+        {/* ── Ultra-Fast GPay-Style Live Camera Viewfinder Modal ────────────── */}
         {isCameraActive && (
           <div className="relative p-4 sm:p-6 rounded-3xl bg-black border border-cyan-400/40 shadow-2xl overflow-hidden max-w-2xl mx-auto w-full">
             <div className="relative w-full aspect-[4/3] sm:aspect-video rounded-2xl overflow-hidden bg-slate-950 flex items-center justify-center">
@@ -343,25 +560,27 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
 
               {/* Viewfinder Target Box tailored for rectangular PDF417 boarding pass barcodes */}
               <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6">
-                <div className="relative w-11/12 max-w-md h-36 sm:h-44 border-2 border-cyan-400/80 rounded-2xl bg-cyan-400/5 shadow-[0_0_20px_rgba(20,200,255,0.3)]">
-                  {/* Corner accents */}
-                  <div className="absolute -top-1 -left-1 w-5 h-5 border-t-4 border-l-4 border-[#14C8FF] rounded-tl" />
-                  <div className="absolute -top-1 -right-1 w-5 h-5 border-t-4 border-r-4 border-[#14C8FF] rounded-tr" />
-                  <div className="absolute -bottom-1 -left-1 w-5 h-5 border-b-4 border-l-4 border-[#14C8FF] rounded-bl" />
-                  <div className="absolute -bottom-1 -right-1 w-5 h-5 border-b-4 border-r-4 border-[#14C8FF] rounded-br" />
+                <div className="relative w-11/12 max-w-md h-36 sm:h-44 border-2 border-cyan-400/90 rounded-2xl bg-cyan-400/5 shadow-[0_0_25px_rgba(20,200,255,0.4)]">
+                  {/* GPay-style corner brackets */}
+                  <div className="absolute -top-1.5 -left-1.5 w-6 h-6 border-t-4 border-l-4 border-[#14C8FF] rounded-tl-lg shadow-[0_0_8px_#14C8FF]" />
+                  <div className="absolute -top-1.5 -right-1.5 w-6 h-6 border-t-4 border-r-4 border-[#14C8FF] rounded-tr-lg shadow-[0_0_8px_#14C8FF]" />
+                  <div className="absolute -bottom-1.5 -left-1.5 w-6 h-6 border-b-4 border-l-4 border-[#14C8FF] rounded-bl-lg shadow-[0_0_8px_#14C8FF]" />
+                  <div className="absolute -bottom-1.5 -right-1.5 w-6 h-6 border-b-4 border-r-4 border-[#14C8FF] rounded-br-lg shadow-[0_0_8px_#14C8FF]" />
 
-                  {/* Animated laser scanline */}
-                  <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_8px_#14C8FF] animate-pulse relative top-1/2 -translate-y-1/2" />
+                  {/* High-speed animated laser scanline */}
+                  <div className="w-full h-0.5 bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_12px_#14C8FF] animate-pulse relative top-1/2 -translate-y-1/2" />
                 </div>
-                <div className="mt-3 px-3 py-1 rounded-full bg-black/70 backdrop-blur-md text-[11px] font-bold text-cyan-300 border border-cyan-400/30">
-                  Align PDF417 Barcode Inside Box
+
+                <div className="mt-4 px-4 py-1.5 rounded-full bg-black/80 backdrop-blur-md text-xs font-bold text-cyan-300 border border-cyan-400/40 shadow-lg flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+                  <span>Align Boarding Pass Barcode Inside Box</span>
                 </div>
               </div>
 
               {cameraLoading && (
-                <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center gap-3">
-                  <div className="w-8 h-8 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                  <div className="text-xs font-bold text-cyan-300">Initializing Camera Stream…</div>
+                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center gap-3">
+                  <div className="w-9 h-9 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-xs font-bold text-cyan-300">Launching High-Speed Camera Stream…</div>
                 </div>
               )}
             </div>
@@ -376,15 +595,31 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
                 Close Camera
               </button>
 
-              {videoDevices.length > 1 && (
-                <button
-                  onClick={switchCamera}
-                  className="py-2.5 px-4 rounded-xl bg-[#162742] hover:bg-[#1f3454] border border-white/10 text-xs font-bold text-cyan-300 flex items-center gap-2 transition-colors"
-                >
-                  <FlipHorizontal size={16} />
-                  Switch Camera
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {isTorchSupported && (
+                  <button
+                    onClick={toggleTorch}
+                    className={`py-2.5 px-4 rounded-xl text-xs font-bold flex items-center gap-2 transition-all ${
+                      isTorchOn
+                        ? 'bg-amber-500/30 text-amber-300 border border-amber-400/50'
+                        : 'bg-[#162742] text-slate-300 hover:bg-[#1f3454] border border-white/10'
+                    }`}
+                  >
+                    {isTorchOn ? <Zap size={16} className="text-amber-400" /> : <ZapOff size={16} />}
+                    <span>{isTorchOn ? 'Torch On' : 'Torch Off'}</span>
+                  </button>
+                )}
+
+                {videoDevices.length > 1 && (
+                  <button
+                    onClick={switchCamera}
+                    className="py-2.5 px-4 rounded-xl bg-[#162742] hover:bg-[#1f3454] border border-white/10 text-xs font-bold text-cyan-300 flex items-center gap-2 transition-colors"
+                  >
+                    <FlipHorizontal size={16} />
+                    Switch Camera
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -401,7 +636,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
                 <div>
                   <h3 className="text-xl font-extrabold text-white">Live Camera Scan</h3>
                   <p className="text-xs text-[#94A3B8] mt-1.5 leading-relaxed">
-                    Scan your physical paper boarding pass PDF417 barcode using your camera
+                    Fast & sharp auto-focus scanner with instant verification (GPay-style)
                   </p>
                 </div>
               </div>
@@ -415,7 +650,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
               </button>
             </div>
 
-            {/* Option 2: Upload Barcode Image */}
+            {/* Option 2: Upload Barcode File */}
             <div className="flex flex-col justify-between p-6 sm:p-8 rounded-3xl bg-gradient-to-b from-[#0E1B2D] to-[#0A1524] border border-white/15 hover:border-cyan-400/50 transition-all shadow-2xl group">
               <div className="space-y-4 text-center">
                 <div className="w-20 h-20 mx-auto rounded-3xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center shadow-xl shadow-indigo-500/30 group-hover:scale-105 transition-transform">
