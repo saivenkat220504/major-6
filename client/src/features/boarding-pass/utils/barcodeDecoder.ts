@@ -7,6 +7,7 @@ import {
   MultiFormatReader,
   PDF417Reader,
 } from '@zxing/library';
+import { readBarcodesFromImageData } from 'zxing-wasm';
 
 export interface BoardingPassData {
   ticket_id: string;
@@ -22,7 +23,7 @@ export interface BoardingPassData {
   seat_no?: string;
 }
 
-// ── Shared hints map for ZXing ─────────────────────────────────────────────────
+// ── Shared hints map for ZXing Library ─────────────────────────────────────────
 function buildHints(): Map<DecodeHintType, any> {
   const hints = new Map<DecodeHintType, any>();
   hints.set(DecodeHintType.POSSIBLE_FORMATS, [
@@ -38,12 +39,40 @@ function buildHints(): Map<DecodeHintType, any> {
 }
 
 /**
- * Robust, multi-layered image loading pipeline for Android WebView & Mobile Browsers.
- * 
- * Step 1: Try native `createImageBitmap(file)` — zero DOM, zero URL, zero base64 overhead.
- *         Supported natively in Chromium / Android WebView / Safari 15+.
- * Step 2: Try `URL.createObjectURL(file)` with HTMLImageElement.
- * Step 3: Try `FileReader.readAsDataURL(file)` with HTMLImageElement.
+ * 3x3 Median Filter on RGBA pixels to strip moiré patterns, screen scan lines,
+ * and high-frequency noise from camera photos taken of computer/phone screens.
+ */
+function applyMedianFilter(srcRgba: Uint8ClampedArray, w: number, h: number): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(srcRgba.length);
+  const srcL = new Uint8Array(w * h);
+
+  for (let i = 0, j = 0; i < srcRgba.length; i += 4, j++) {
+    srcL[j] = Math.round(0.299 * srcRgba[i] + 0.587 * srcRgba[i + 1] + 0.114 * srcRgba[i + 2]);
+  }
+
+  const win = new Uint8Array(9);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      let idx = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          win[idx++] = srcL[(y + dy) * w + (x + dx)];
+        }
+      }
+      win.sort();
+      const m = win[4];
+      const outIdx = (y * w + x) * 4;
+      out[outIdx] = m;
+      out[outIdx + 1] = m;
+      out[outIdx + 2] = m;
+      out[outIdx + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/**
+ * Multi-layered image loading pipeline for Android WebView & Mobile Browsers.
  */
 async function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
   // Method 1: createImageBitmap (Native Android WebView / Browser API)
@@ -61,14 +90,13 @@ async function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArra
         return { data: imageData.data, width: canvas.width, height: canvas.height };
       }
     } catch (err) {
-      console.warn('[BarcodeDecoder] createImageBitmap failed, trying URL fallback:', err);
+      console.warn('[BarcodeDecoder] createImageBitmap failed, trying BlobURL fallback:', err);
     }
   }
 
   // Method 2: HTMLImageElement via Blob URL
   try {
-    const imageData = await loadImageViaBlobUrl(file);
-    return imageData;
+    return await loadImageViaBlobUrl(file);
   } catch (err) {
     console.warn('[BarcodeDecoder] Blob URL load failed, trying DataURL fallback:', err);
   }
@@ -147,14 +175,14 @@ function loadViaFileReader(file: File): Promise<{ data: Uint8ClampedArray; width
       };
 
       img.onerror = () => {
-        reject(new Error('Image element failed to parse FileReader data URL. File format may be unsupported.'));
+        reject(new Error('Image element failed to parse FileReader data URL'));
       };
 
       img.src = result;
     };
 
     reader.onerror = () => {
-      reject(new Error(`FileReader failed to read selected file`));
+      reject(new Error('FileReader failed to read selected file'));
     };
 
     reader.readAsDataURL(file);
@@ -162,8 +190,7 @@ function loadViaFileReader(file: File): Promise<{ data: Uint8ClampedArray; width
 }
 
 /**
- * Converts RGBA pixel data (from canvas.getImageData) into the Uint8ClampedArray
- * of luminance (grayscale) bytes that ZXing's RGBLuminanceSource expects.
+ * Converts RGBA pixel data to Uint8ClampedArray luminance RGB for ZXing Library.
  */
 function rgbaToRGB(rgba: Uint8ClampedArray, width: number, height: number): Uint8ClampedArray {
   const rgb = new Uint8ClampedArray(width * height * 3);
@@ -177,9 +204,9 @@ function rgbaToRGB(rgba: Uint8ClampedArray, width: number, height: number): Uint
 }
 
 /**
- * Attempt to decode a barcode from given pixel data using ZXing directly.
+ * Decodes barcode using @zxing/library fallback engine.
  */
-function decodeFromPixels(
+function decodeFromPixelsZXingLib(
   rgbaData: Uint8ClampedArray,
   width: number,
   height: number
@@ -187,16 +214,14 @@ function decodeFromPixels(
   const hints = buildHints();
   const rgb = rgbaToRGB(rgbaData, width, height);
 
-  // Dedicated PDF417 reader
   try {
     const luminanceSource = new RGBLuminanceSource(rgb, width, height);
     const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
     const pdfReader = new PDF417Reader();
     const result = pdfReader.decode(binaryBitmap, hints);
     if (result?.getText()) return result.getText();
-  } catch { /* try next */ }
+  } catch { /* continue */ }
 
-  // Multi-format reader fallback
   try {
     const luminanceSource = new RGBLuminanceSource(rgb, width, height);
     const binaryBitmap = new BinaryBitmap(new HybridBinarizer(luminanceSource));
@@ -204,13 +229,38 @@ function decodeFromPixels(
     multiReader.setHints(hints);
     const result = multiReader.decode(binaryBitmap);
     if (result?.getText()) return result.getText();
-  } catch { /* try next */ }
+  } catch { /* continue */ }
 
   return null;
 }
 
 /**
- * Applies image processing transformations for multi-pass decoding attempts.
+ * High-performance WebAssembly decoding using zxing-wasm.
+ * Successfully decodes screen photos with median filtering.
+ */
+async function decodeFromPixelsWasm(
+  rgbaData: Uint8ClampedArray,
+  width: number,
+  height: number
+): Promise<string | null> {
+  try {
+    const imgData = { data: rgbaData, width, height };
+    const results = await readBarcodesFromImageData(imgData, {
+      formats: ['PDF417', 'QRCode', 'Code128', 'Code39'],
+      tryHarder: true,
+      tryRotate: true,
+    });
+    if (results && results.length > 0 && results[0].text) {
+      return results[0].text;
+    }
+  } catch (err) {
+    console.warn('[BarcodeDecoder] zxing-wasm decode pass error:', err);
+  }
+  return null;
+}
+
+/**
+ * Applies image transformations for multi-pass decoding attempts.
  */
 function applyTransform(
   sourceRgba: Uint8ClampedArray,
@@ -266,6 +316,32 @@ function applyTransform(
 }
 
 /**
+ * Server-side decoding fallback for screen photos if WASM and client fails.
+ */
+async function decodeViaServerFallback(file: File): Promise<BoardingPassData | null> {
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+    const response = await fetch(`${apiBase}/api/decode-barcode`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (response.ok) {
+      const resData = await response.json();
+      if (resData && resData.success && resData.data) {
+        return resData.data;
+      }
+    }
+  } catch (err) {
+    console.warn('[BarcodeDecoder] Backend server decode fallback bypassed:', err);
+  }
+  return null;
+}
+
+/**
  * Parses raw barcode text (IATA BCBP standard, JSON payload, or Delimited text)
  * into the canonical SIPAS BoardingPassData structure.
  */
@@ -289,10 +365,6 @@ export function parseBoardingPassBarcode(rawInput: string): BoardingPassData {
         const fromCode = String(dataObj.from || dataObj.origin || dataObj.departure || 'N/A').trim().toUpperCase();
         const toCode = String(dataObj.to || dataObj.destination || dataObj.arrival || 'N/A').trim().toUpperCase();
         const seat = String(dataObj.seat || dataObj.seat_assignment || dataObj.seat_no || 'N/A').trim().toUpperCase();
-
-        if (passenger_name === 'Unknown' && flight_id === 'N/A' && ticket_id === 'N/A') {
-          throw new Error('JSON payload does not contain valid boarding pass fields');
-        }
 
         return { ticket_id, passenger_name, flight_id, date, from: fromCode, to: toCode, terminal: 'T1', seat, name: passenger_name, seat_no: seat };
       }
@@ -389,7 +461,7 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
     throw new Error('The selected file is empty (0 bytes). Please select a valid image.');
   }
 
-  // Step 1: Multi-layered image loading pipeline (createImageBitmap -> BlobURL -> FileReader)
+  // Step 1: Multi-layered image loading pipeline
   let pixelData: { data: Uint8ClampedArray; width: number; height: number };
   try {
     pixelData = await loadFileToImageData(file);
@@ -399,11 +471,23 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
 
   const { data: rgbaData, width, height } = pixelData;
 
-  // Step 2: Attempt 1 — decode original pixels directly
-  const raw1 = decodeFromPixels(rgbaData, width, height);
-  if (raw1) return parseBoardingPassBarcode(raw1);
+  // Step 2: Attempt 1 — WASM decode on original RGBA image
+  const rawWasm = await decodeFromPixelsWasm(rgbaData, width, height);
+  if (rawWasm) return parseBoardingPassBarcode(rawWasm);
 
-  // Step 3: Multi-pass — try rotations and contrast enhancement
+  // Step 3: Attempt 2 — WASM decode on 3x3 Median-Filtered image (CRITICAL for screen photos with moiré)
+  const medianFilteredRgba = applyMedianFilter(rgbaData, width, height);
+  const rawWasmMedian = await decodeFromPixelsWasm(medianFilteredRgba, width, height);
+  if (rawWasmMedian) return parseBoardingPassBarcode(rawWasmMedian);
+
+  // Step 4: Attempt 3 — ZXing Library fallback on original & median filtered pixels
+  const rawZ1 = decodeFromPixelsZXingLib(rgbaData, width, height);
+  if (rawZ1) return parseBoardingPassBarcode(rawZ1);
+
+  const rawZ2 = decodeFromPixelsZXingLib(medianFilteredRgba, width, height);
+  if (rawZ2) return parseBoardingPassBarcode(rawZ2);
+
+  // Step 5: Attempt 4 — Multi-pass transforms (Rotations 90/180/270, Scaling, Contrast)
   const angles: Array<0 | 90 | 180 | 270> = [180, 90, 270];
   const scales = [1.0, 1.5, 2.0];
   const contrastOptions = [false, true];
@@ -411,15 +495,23 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
   for (const contrast of contrastOptions) {
     for (const scale of scales) {
       for (const angle of angles) {
-        const transformed = applyTransform(rgbaData, width, height, angle, scale, contrast);
+        const transformed = applyTransform(medianFilteredRgba, width, height, angle, scale, contrast);
         if (!transformed) continue;
-        const raw = decodeFromPixels(transformed.data, transformed.width, transformed.height);
-        if (raw) return parseBoardingPassBarcode(raw);
+
+        const rawT = await decodeFromPixelsWasm(transformed.data, transformed.width, transformed.height);
+        if (rawT) return parseBoardingPassBarcode(rawT);
+
+        const rawTZ = decodeFromPixelsZXingLib(transformed.data, transformed.width, transformed.height);
+        if (rawTZ) return parseBoardingPassBarcode(rawTZ);
       }
     }
   }
 
-  // Step 4: No barcode found
+  // Step 6: Server-side decode fallback (if client-side WebAssembly bypassed or failed)
+  const serverResult = await decodeViaServerFallback(file);
+  if (serverResult) return serverResult;
+
+  // Step 7: Final failure message
   throw new Error(
     'No valid PDF417 boarding pass barcode was detected in the image. ' +
     'Please ensure the barcode is clearly visible, well-lit, and in focus.'
