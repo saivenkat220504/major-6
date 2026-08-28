@@ -72,6 +72,18 @@ function applyMedianFilter(srcRgba: Uint8ClampedArray, w: number, h: number): Ui
 }
 
 /**
+ * Detects MIME type from file header magic bytes for robust blob creation.
+ */
+function detectMimeType(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer.slice(0, 12));
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return 'image/png';
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return 'image/jpeg';
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46) return 'image/gif';
+  if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46) return 'image/webp';
+  return 'image/png';
+}
+
+/**
  * Multi-layered image loading pipeline for Android WebView & Mobile Browsers.
  */
 async function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
@@ -98,11 +110,11 @@ async function loadFileToImageData(file: File): Promise<{ data: Uint8ClampedArra
   try {
     return await loadImageViaBlobUrl(file);
   } catch (err) {
-    console.warn('[BarcodeDecoder] Blob URL load failed, trying DataURL fallback:', err);
+    console.warn('[BarcodeDecoder] Blob URL load failed, trying ArrayBuffer fallback:', err);
   }
 
-  // Method 3: FileReader readAsDataURL fallback
-  return loadViaFileReader(file);
+  // Method 3: FileReader readAsArrayBuffer + Magic Byte Blob fallback
+  return loadViaArrayBuffer(file);
 }
 
 function loadImageViaBlobUrl(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
@@ -142,51 +154,84 @@ function loadImageViaBlobUrl(file: File): Promise<{ data: Uint8ClampedArray; wid
   });
 }
 
-function loadViaFileReader(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
+function loadViaArrayBuffer(file: File): Promise<{ data: Uint8ClampedArray; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
 
     reader.onload = (event) => {
-      const result = event.target?.result;
-      if (!result || typeof result !== 'string') {
-        return reject(new Error('FileReader produced no output'));
+      const buffer = event.target?.result as ArrayBuffer;
+      if (!buffer || buffer.byteLength === 0) {
+        return reject(new Error('FileReader ArrayBuffer produced 0 bytes'));
       }
 
-      const img = new Image();
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.naturalWidth || img.width;
-          canvas.height = img.naturalHeight || img.height;
+      const mimeType = detectMimeType(buffer);
+      const cleanBlob = new Blob([buffer], { type: mimeType });
 
-          if (canvas.width === 0 || canvas.height === 0) {
-            return reject(new Error('Image has zero dimensions'));
-          }
-
-          const ctx = canvas.getContext('2d', { willReadFrequently: true });
-          if (!ctx) return reject(new Error('Canvas 2D context unavailable'));
-
-          ctx.drawImage(img, 0, 0);
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          resolve({ data: imageData.data, width: canvas.width, height: canvas.height });
-        } catch (e: any) {
-          reject(e);
-        }
-      };
-
-      img.onerror = () => {
-        reject(new Error('Image element failed to parse FileReader data URL'));
-      };
-
-      img.src = result;
+      // Try createImageBitmap on clean blob
+      if (typeof createImageBitmap === 'function') {
+        createImageBitmap(cleanBlob)
+          .then((bitmap) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (ctx && canvas.width > 0 && canvas.height > 0) {
+              ctx.drawImage(bitmap, 0, 0);
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              bitmap.close();
+              return resolve({ data: imageData.data, width: canvas.width, height: canvas.height });
+            }
+            reject(new Error('Canvas zero size'));
+          })
+          .catch(() => {
+            loadImgFromBlob(cleanBlob, resolve, reject);
+          });
+      } else {
+        loadImgFromBlob(cleanBlob, resolve, reject);
+      }
     };
 
     reader.onerror = () => {
-      reject(new Error('FileReader failed to read selected file'));
+      reject(new Error('FileReader failed to read ArrayBuffer'));
     };
 
-    reader.readAsDataURL(file);
+    reader.readAsArrayBuffer(file);
   });
+}
+
+function loadImgFromBlob(
+  blob: Blob,
+  resolve: (val: { data: Uint8ClampedArray; width: number; height: number }) => void,
+  reject: (reason: any) => void
+) {
+  const img = new Image();
+  const url = URL.createObjectURL(blob);
+
+  img.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      URL.revokeObjectURL(url);
+
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return reject(new Error('Canvas 2D context unavailable'));
+
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      resolve({ data: imageData.data, width: canvas.width, height: canvas.height });
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      reject(e);
+    }
+  };
+
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    reject(new Error('Image element failed to load from Blob URL'));
+  };
+
+  img.src = url;
 }
 
 /**
@@ -461,11 +506,14 @@ export async function decodeBarcodeImage(file: File): Promise<BoardingPassData> 
     throw new Error('The selected file is empty (0 bytes). Please select a valid image.');
   }
 
-  // Step 1: Multi-layered image loading pipeline
-  let pixelData: { data: Uint8ClampedArray; width: number; height: number };
+  // Step 1: Multi-layered image loading pipeline with fallback to server API
+  let pixelData: { data: Uint8ClampedArray; width: number; height: number } | null = null;
   try {
     pixelData = await loadFileToImageData(file);
   } catch (loadErr: any) {
+    console.warn('[BarcodeDecoder] Client-side image load failed, seamlessly using server decoding fallback:', loadErr);
+    const serverResult = await decodeViaServerFallback(file);
+    if (serverResult) return serverResult;
     throw new Error(`Image load failed: ${loadErr.message}`);
   }
 
