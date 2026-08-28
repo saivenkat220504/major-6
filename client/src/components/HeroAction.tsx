@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react'
-import { QrCode, AlertTriangle, RefreshCw, Upload } from 'lucide-react'
+import { Scan, AlertTriangle, RefreshCw, Upload } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { decodeQRImage } from '../features/boarding-pass/utils/qrDecoder'
+import { decodeBarcodeImage } from '../features/boarding-pass/utils/barcodeDecoder'
 
 export default function HeroAction() {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -25,12 +25,12 @@ export default function HeroAction() {
     setError(null)
 
     try {
-      const data = await decodeQRImage(file)
+      const data = await decodeBarcodeImage(file)
       // Store in sessionStorage so data is forgotten when the browser is closed
       sessionStorage.setItem('boardingData', JSON.stringify(data))
       navigate('/boarding-pass', { state: { boardingData: data } })
     } catch (err: any) {
-      setError(err.message || 'Failed to read QR code')
+      setError(err.message || 'Failed to decode PDF417 boarding pass barcode')
     } finally {
       setIsProcessing(false)
     }
@@ -83,7 +83,7 @@ export default function HeroAction() {
           <div className="w-8 h-8 border-[3px] border-white border-t-transparent rounded-full animate-spin" />
         ) : (
           <div className="relative w-14 h-14 bg-white/20 rounded-xl flex items-center justify-center">
-            <QrCode size={30} strokeWidth={1.8} />
+            <Scan size={30} strokeWidth={1.8} />
             <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-white/30 rounded-full flex items-center justify-center">
               <Upload size={12} />
             </div>
@@ -91,7 +91,7 @@ export default function HeroAction() {
         )}
 
         <span className="text-lg tracking-wide">
-          {isProcessing ? 'Processing…' : 'Upload Ticket Here for Assistance'}
+          {isProcessing ? 'Processing…' : 'Scan Boarding Pass Barcode'}
         </span>
       </button>
     </div>
