@@ -78,6 +78,21 @@ function TypingIndicator() {
   );
 }
 
+function renderFormattedText(text: string) {
+  if (!text) return null;
+  const parts = text.split(/(\*\*.*?\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      return (
+        <strong key={i} className="font-bold text-blue-200 bg-blue-500/20 px-1 py-0.5 rounded">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
+}
+
 function MsgBubble({ msg }: { msg: DisplayMessage }) {
   const isUser = msg.role === 'user';
   const time = msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -86,7 +101,7 @@ function MsgBubble({ msg }: { msg: DisplayMessage }) {
       <div className="flex justify-end mb-3 aura-fade-up">
         <div className="max-w-[78%]">
           <div className="px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed text-white shadow-lg"
-            style={{ background: 'linear-gradient(135deg,#2563eb,#4f46e5)' }}>{msg.text}</div>
+            style={{ background: 'linear-gradient(135deg,#2563eb,#4f46e5)' }}>{renderFormattedText(msg.text)}</div>
           <div className="text-[10px] text-right mt-1 text-slate-400">{time}</div>
         </div>
       </div>
@@ -98,7 +113,7 @@ function MsgBubble({ msg }: { msg: DisplayMessage }) {
         style={{ background: 'linear-gradient(135deg,#2563eb,#7c3aed)' }}>A</div>
       <div className="max-w-[78%]">
         <div className="bg-white/10 border border-white/10 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed text-slate-100 whitespace-pre-wrap">
-          {msg.text}</div>
+          {renderFormattedText(msg.text)}</div>
         <div className="text-[10px] mt-1 text-slate-400">{time}</div>
       </div>
     </div>

@@ -7,8 +7,8 @@
 export function removeDuplicatePhrases(text: string): string {
   if (!text) return '';
 
-  // 1. Normalize whitespace
-  let cleaned = text.replace(/\s+/g, ' ').trim();
+  // 1. Strip raw markdown asterisks (**) if present
+  let cleaned = text.replace(/\*\*/g, '').replace(/\s+/g, ' ').trim();
 
   // 2. Remove immediate duplicate adjacent single words (case-insensitive)
   // e.g. "hi hi hi" -> "hi", "I I" -> "I", "this this" -> "this"
@@ -59,72 +59,70 @@ export function cleanSpeechTranscript(results: any): CleanedSpeechResult {
     return { finalTranscript: '', liveTranscript: '' };
   }
 
-  const finalChunks: string[] = [];
-  const interimChunks: string[] = [];
-
+  // 1. Extract non-empty transcripts in chronological order
+  const items: string[] = [];
   for (let i = 0; i < results.length; i++) {
-    const item = results[i];
-    if (!item || !item[0]) continue;
-    const transcript = (item[0].transcript || '').trim();
-    if (!transcript) continue;
-
-    if (item.isFinal) {
-      finalChunks.push(transcript);
-    } else {
-      interimChunks.push(transcript);
+    const r = results[i];
+    if (!r || !r[0]) continue;
+    const text = (r[0].transcript || '').trim();
+    if (text) {
+      items.push(text);
     }
   }
 
-  // Merge sequential chunks where each chunk is cumulative or extends the previous chunk
-  const mergeChunks = (chunks: string[]): string => {
-    if (chunks.length === 0) return '';
-
-    const clean: string[] = [];
-    for (const chunk of chunks) {
-      if (clean.length === 0) {
-        clean.push(chunk);
-        continue;
-      }
-
-      const last = clean[clean.length - 1];
-      const normLast = last.toLowerCase().trim();
-      const normChunk = chunk.toLowerCase().trim();
-
-      // If current chunk starts with previous chunk, it's an interim extension of the previous phrase
-      if (normChunk.startsWith(normLast)) {
-        clean[clean.length - 1] = chunk; // Replace last with expanded chunk
-      } else if (normLast.startsWith(normChunk)) {
-        // Last already has more content, keep last
-      } else {
-        // Distinct chunk, append
-        clean.push(chunk);
-      }
-    }
-    return clean.join(' ');
-  };
-
-  const finalClean = mergeChunks(finalChunks);
-  const interimClean = mergeChunks(interimChunks);
-
-  let fullClean = '';
-  if (finalClean && interimClean) {
-    const normFinal = finalClean.toLowerCase().trim();
-    const normInterim = interimClean.toLowerCase().trim();
-    if (normInterim.startsWith(normFinal)) {
-      fullClean = interimClean;
-    } else {
-      fullClean = `${finalClean} ${interimClean}`;
-    }
-  } else {
-    fullClean = finalClean || interimClean;
+  if (items.length === 0) {
+    return { finalTranscript: '', liveTranscript: '' };
   }
 
-  // Apply deduplication filter
-  const deduplicatedFull = removeDuplicatePhrases(fullClean);
-  const deduplicatedFinal = removeDuplicatePhrases(finalClean);
+  // 2. Build non-redundant transcript sequence
+  // If item[i+1] starts with item[i] or contains item[i], item[i] was just an interim partial hypothesis of item[i+1]
+  const cleanSequence: string[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const current = items[i];
+    const normCurrent = current.toLowerCase().trim();
 
+    if (cleanSequence.length === 0) {
+      cleanSequence.push(current);
+      continue;
+    }
+
+    const prev = cleanSequence[cleanSequence.length - 1];
+    const normPrev = prev.toLowerCase().trim();
+
+    if (normCurrent.startsWith(normPrev) || normCurrent.includes(normPrev)) {
+      cleanSequence[cleanSequence.length - 1] = current; // Replace with fuller transcript
+    } else if (normPrev.startsWith(normCurrent) || normPrev.includes(normCurrent)) {
+      // Prev already has more complete information, skip current
+    } else {
+      // Check for partial tail/head word overlap (e.g. prev: "hi can you", current: "can you tell me")
+      let mergedOverlap = false;
+      const prevWords = prev.split(' ');
+      const currentWords = current.split(' ');
+      for (let overlapLen = Math.min(prevWords.length, currentWords.length); overlapLen >= 1; overlapLen--) {
+        const prevTail = prevWords.slice(-overlapLen).join(' ').toLowerCase();
+        const currentHead = currentWords.slice(0, overlapLen).join(' ').toLowerCase();
+        if (prevTail === currentHead) {
+          const merged = [...prevWords, ...currentWords.slice(overlapLen)].join(' ');
+          cleanSequence[cleanSequence.length - 1] = merged;
+          mergedOverlap = true;
+          break;
+        }
+      }
+      if (!mergedOverlap) {
+        cleanSequence.push(current);
+      }
+    }
+  }
+
+  // 3. Join cleaned sequence
+  const rawJoined = cleanSequence.join(' ').replace(/\s+/g, ' ').trim();
+
+  // 4. Remove any word/phrase level repetitions
+  const deduplicated = removeDuplicatePhrases(rawJoined);
+
+  // Both finalTranscript and liveTranscript return the exact same cleaned, complete text
   return {
-    finalTranscript: deduplicatedFinal,
-    liveTranscript: deduplicatedFull,
+    finalTranscript: deduplicated,
+    liveTranscript: deduplicated,
   };
 }
