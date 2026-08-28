@@ -46,7 +46,6 @@ function playScanSuccessChime() {
     const gain = ctx.createGain();
 
     osc.type = 'sine';
-    // Play two quick ascending tones (A5 -> C#6)
     const now = ctx.currentTime;
     osc.frequency.setValueAtTime(880, now); // A5
     osc.frequency.setValueAtTime(1108.73, now + 0.08); // C#6
@@ -77,7 +76,7 @@ function applyMedianFilter(srcRgba: Uint8ClampedArray, w: number, h: number): Ui
   }
 
   const win = new Uint8Array(9);
-  for (let y = 1; y < h - 1; y += 2) { // Step 2 for high-speed sampling
+  for (let y = 1; y < h - 1; y += 2) {
     for (let x = 1; x < w - 1; x += 2) {
       let idx = 0;
       for (let dy = -1; dy <= 1; dy++) {
@@ -102,6 +101,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
   const { currentLang, changeLanguage, getLanguageObj } = useLanguage();
 
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scannedSuccess, setScannedSuccess] = useState<BoardingPassData | null>(null);
   const [showLangDropdown, setShowLangDropdown] = useState(false);
@@ -133,10 +133,9 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
   const currentLangObj = getLanguageObj();
 
   const handleSelectTicket = (data: BoardingPassData) => {
-    // Stop scanning loop immediately
     isScanningActiveRef.current = false;
 
-    // Haptic & Audio Confirmation Feedback (GPay-like)
+    // Haptic & Audio Confirmation Feedback
     try {
       if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
     } catch {}
@@ -186,6 +185,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
     setCameraLoading(false);
     setIsTorchOn(false);
     setIsTorchSupported(false);
+    setIsCapturing(false);
   };
 
   const startCamera = async (deviceId?: string) => {
@@ -195,7 +195,6 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
     isScanningActiveRef.current = true;
 
     try {
-      // 1. Enumerate available video devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = devices.filter((d) => d.kind === 'videoinput');
       setVideoDevices(videoInputs);
@@ -211,7 +210,6 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
       }
       setCurrentDeviceId(targetId || null);
 
-      // 2. High Definition WebRTC Constraints with Continuous Auto-Focus (1080p/720p)
       const constraints: MediaStreamConstraints = {
         audio: false,
         video: {
@@ -226,7 +224,6 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       mediaStreamRef.current = stream;
 
-      // Check if torch/flashlight is supported
       const track = stream.getVideoTracks()[0];
       if (track) {
         const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
@@ -241,12 +238,9 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
       }
 
       setCameraLoading(false);
-
-      // 3. Ultra-Fast High-Frequency Scan Sampling Loop (70ms interval = ~14 FPS sampling)
       startScanSamplingLoop();
     } catch (err: any) {
-      console.error('High-speed camera setup error:', err);
-      // Fallback attempt: try simpler constraints
+      console.error('Camera launch error:', err);
       try {
         const fallbackStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment' },
@@ -292,8 +286,48 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
   };
 
   /**
+   * Manual Still Frame Snapshot Handler:
+   * Captures high-res still frame from the video stream and runs full multi-pass decoding
+   * (WASM + Median Filtering + Rotation + Contrast + Server Fallback).
+   */
+  const handleCaptureSnapshot = async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2) return;
+
+    setIsCapturing(true);
+    setError(null);
+
+    try {
+      const vw = video.videoWidth || 1920;
+      const vh = video.videoHeight || 1080;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = vw;
+      canvas.height = vh;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas context unavailable');
+
+      ctx.drawImage(video, 0, 0, vw, vh);
+
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), 'image/png')
+      );
+
+      if (!blob) throw new Error('Failed to capture image frame from camera');
+
+      const file = new File([blob], `barcode_snapshot_${Date.now()}.png`, { type: 'image/png' });
+      const result = await decodeBarcodeImage(file);
+      handleSelectTicket(result);
+    } catch (err: any) {
+      console.error('Snapshot decode error:', err);
+      setError(err.message || 'Could not decode barcode from captured picture. Please hold camera steady and align within box.');
+    } finally {
+      setIsCapturing(false);
+    }
+  };
+
+  /**
    * Ultra-fast continuous frame sampling loop.
-   * Draws video frame to canvas and attempts WASM + ZXing Library decoding.
    */
   const startScanSamplingLoop = () => {
     if (scanLoopTimerRef.current) clearInterval(scanLoopTimerRef.current);
@@ -308,7 +342,6 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
     hints.set(DecodeHintType.TRY_HARDER, true);
 
     const zxingLibReader = new BrowserMultiFormatReader(hints);
-
     let isFrameBusy = false;
 
     scanLoopTimerRef.current = setInterval(async () => {
@@ -326,7 +359,6 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
           return;
         }
 
-        // Draw video frame to canvas
         let canvas = canvasRef.current;
         if (!canvas) {
           canvas = document.createElement('canvas');
@@ -343,7 +375,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
         ctx.drawImage(video, 0, 0, vw, vh);
         const imgData = ctx.getImageData(0, 0, vw, vh);
 
-        // Pass 1: zxing-wasm WebAssembly decode on raw frame
+        // Pass 1: zxing-wasm on raw frame
         const wasmResults = await readBarcodesFromImageData(imgData, {
           formats: ['PDF417', 'QRCode', 'Code128', 'Code39'],
           tryHarder: true,
@@ -371,7 +403,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
           return;
         }
 
-        // Pass 3: BrowserMultiFormatReader fallback on video element directly
+        // Pass 3: BrowserMultiFormatReader fallback
         try {
           const libRes = await zxingLibReader.decodeFromVideoElement(video);
           if (libRes && libRes.getText()) {
@@ -381,14 +413,14 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
             return;
           }
         } catch {
-          // Keep loop running smoothly
+          // Continue smoothly
         }
       } catch (err) {
         // Continue scan loop
       } finally {
         isFrameBusy = false;
       }
-    }, 75); // 75ms high-frequency sampling (~13 FPS)
+    }, 75);
   };
 
   useEffect(() => {
@@ -443,7 +475,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
 
   return (
     <div className="min-h-screen bg-[#06121F] text-white flex flex-col justify-between p-4 sm:p-6 font-sans">
-      {/* Hidden offscreen canvas for high-speed frame processing */}
+      {/* Hidden offscreen canvas for frame processing */}
       <canvas ref={canvasRef} className="hidden" />
 
       {/* Top Header Bar */}
@@ -511,7 +543,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
             Scan Your Boarding Pass
           </h1>
           <p className="text-sm sm:text-base text-[#94A3B8] max-w-xl mx-auto leading-relaxed">
-            Position your airline boarding pass PDF417 barcode in the camera or upload an image. Once verified, your personalized Dashboard will open automatically.
+            Position your airline boarding pass PDF417 barcode in the camera, capture a photo, or upload an image. Once verified, your Dashboard opens automatically.
           </p>
         </div>
 
@@ -573,29 +605,36 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
 
                 <div className="mt-4 px-4 py-1.5 rounded-full bg-black/80 backdrop-blur-md text-xs font-bold text-cyan-300 border border-cyan-400/40 shadow-lg flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                  <span>Align Boarding Pass Barcode Inside Box</span>
+                  <span>Align Barcode & Tap Capture Below</span>
                 </div>
               </div>
 
               {cameraLoading && (
-                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center gap-3">
+                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center gap-3 z-20">
                   <div className="w-9 h-9 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
                   <div className="text-xs font-bold text-cyan-300">Launching High-Speed Camera Stream…</div>
                 </div>
               )}
+
+              {isCapturing && (
+                <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center gap-3 z-30">
+                  <div className="w-10 h-10 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                  <div className="text-sm font-extrabold text-cyan-300">Processing Captured Photo…</div>
+                </div>
+              )}
             </div>
 
-            {/* Camera Control Bar */}
-            <div className="mt-4 flex items-center justify-between gap-3">
-              <button
-                onClick={stopCamera}
-                className="py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white flex items-center gap-2 transition-colors"
-              >
-                <X size={16} />
-                Close Camera
-              </button>
+            {/* Camera Control Bar with Prominent Capture Picture Button */}
+            <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
+                <button
+                  onClick={stopCamera}
+                  className="py-2.5 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-white flex items-center gap-2 transition-colors"
+                >
+                  <X size={16} />
+                  <span>Close</span>
+                </button>
 
-              <div className="flex items-center gap-2">
                 {isTorchSupported && (
                   <button
                     onClick={toggleTorch}
@@ -609,17 +648,28 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
                     <span>{isTorchOn ? 'Torch On' : 'Torch Off'}</span>
                   </button>
                 )}
-
-                {videoDevices.length > 1 && (
-                  <button
-                    onClick={switchCamera}
-                    className="py-2.5 px-4 rounded-xl bg-[#162742] hover:bg-[#1f3454] border border-white/10 text-xs font-bold text-cyan-300 flex items-center gap-2 transition-colors"
-                  >
-                    <FlipHorizontal size={16} />
-                    Switch Camera
-                  </button>
-                )}
               </div>
+
+              {/* Prominent Center Snapshot Button */}
+              <button
+                id="capture-picture-btn"
+                onClick={handleCaptureSnapshot}
+                disabled={isCapturing || cameraLoading}
+                className="w-full sm:w-auto py-3 px-6 rounded-2xl bg-gradient-to-r from-[#2F80FF] via-[#1E6DFF] to-[#14C8FF] hover:from-blue-600 hover:to-cyan-500 text-white font-extrabold text-xs sm:text-sm shadow-xl shadow-cyan-500/30 flex items-center justify-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+              >
+                <Camera size={18} />
+                <span>Capture & Process Photo</span>
+              </button>
+
+              {videoDevices.length > 1 && (
+                <button
+                  onClick={switchCamera}
+                  className="py-2.5 px-4 rounded-xl bg-[#162742] hover:bg-[#1f3454] border border-white/10 text-xs font-bold text-cyan-300 flex items-center gap-2 transition-colors"
+                >
+                  <FlipHorizontal size={16} />
+                  <span>Switch Camera</span>
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -636,7 +686,7 @@ export default function TicketScanPage({ onScanComplete }: TicketScanPageProps) 
                 <div>
                   <h3 className="text-xl font-extrabold text-white">Live Camera Scan</h3>
                   <p className="text-xs text-[#94A3B8] mt-1.5 leading-relaxed">
-                    Fast & sharp auto-focus scanner with instant verification (GPay-style)
+                    Auto-focus scanner with instant one-tap photo capture
                   </p>
                 </div>
               </div>
