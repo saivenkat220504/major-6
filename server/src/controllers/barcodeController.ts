@@ -125,8 +125,8 @@ export async function decodeBarcodeHandler(req: Request, res: Response): Promise
     if (req.body && req.body.imageBase64) {
       const base64Data = req.body.imageBase64.replace(/^data:image\/\w+;base64,/, '');
       imageBuffer = Buffer.from(base64Data, 'base64');
-    } else if (req.file && req.file.buffer) {
-      imageBuffer = req.file.buffer;
+    } else if ((req as any).file && (req as any).file.buffer) {
+      imageBuffer = (req as any).file.buffer;
     }
 
     if (!imageBuffer) {
