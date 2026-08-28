@@ -131,4 +131,20 @@ model GuardianEmailConfig {
   @@unique([userId, guardianEmail])
 }
 
+// ── Flight Information / Tracking ──────────────────────────────────────────────
+
+model FlightInfo {
+  id                String   @id @default(uuid())
+  flightNumber      String?  @unique @map("flight_number")
+  departureTerminal String   @map("departure_terminal")
+  assignedGate      String   @map("assigned_gate")
+  seatAssignment    String   @map("seat_assignment")
+  flightDate        String   @map("flight_date")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("flight_info")
+}
+
+
 

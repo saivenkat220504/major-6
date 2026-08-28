@@ -3,17 +3,10 @@ import { useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
   ExternalLink,
-  MapPin,
   Plane,
   ShieldCheck,
-  Clock,
-  CloudSun,
-  User,
-  Ticket,
-  Armchair,
-  CheckCircle2,
-  Calendar,
-  Compass,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react'
 import FlightCountdown from '../components/FlightCountdown'
 
@@ -27,6 +20,21 @@ interface BoardingData {
   seat?: string
   gate?: string
   date?: string
+}
+
+export interface FlightInfoData {
+  id?: string
+  flightNumber?: string
+  departureTerminal: string
+  assignedGate: string
+  seatAssignment: string
+  flightDate: string
+  departure_terminal?: string
+  assigned_gate?: string
+  seat_assignment?: string
+  flight_date?: string
+  createdAt?: string
+  updatedAt?: string
 }
 
 type FlightStatusType = 'boarding_soon' | 'delayed' | 'on_time' | 'gate_changed'
@@ -64,21 +72,64 @@ const STATUS_CONFIG: Record<
 export default function FlightTrackingPage() {
   const navigate = useNavigate()
   const [boardingData, setBoardingData] = useState<BoardingData | null>(null)
-  const [currentStatus, setCurrentStatus] = useState<FlightStatusType>('boarding_soon')
+  const [currentStatus] = useState<FlightStatusType>('boarding_soon')
+  
+  // Database-backed Flight Information State
+  const [flightInfo, setFlightInfo] = useState<FlightInfoData | null>(null)
+  const [loading, setLoading] = useState<boolean>(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchFlightData = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+
+      let flightNumber = ''
+      try {
+        const raw = sessionStorage.getItem('boardingData')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          setBoardingData(parsed)
+          flightNumber = parsed.flight_id || ''
+        }
+      } catch (e) {
+        console.error('Failed to parse boarding data:', e)
+      }
+
+      const endpoint = flightNumber
+        ? `/api/flight-info?flightNumber=${encodeURIComponent(flightNumber)}`
+        : '/api/flight-info'
+
+      const response = await fetch(endpoint)
+      if (!response.ok) {
+        throw new Error(`Failed to fetch flight info from database (Status ${response.status})`)
+      }
+
+      const json = await response.json()
+      if (json.success && json.data) {
+        setFlightInfo(json.data)
+      } else {
+        throw new Error(json.error || 'Invalid flight info response from database')
+      }
+    } catch (err: any) {
+      console.error('[FlightTracking] Error loading data from backend:', err)
+      setError(err.message || 'Could not load flight data from database')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem('boardingData')
-      if (raw) {
-        setBoardingData(JSON.parse(raw))
-      }
-    } catch (e) {
-      console.error('Failed to parse boarding data:', e)
-    }
+    fetchFlightData()
   }, [])
 
-  const gateNumber = boardingData?.gate || 'Gate 14B'
-  const flightNumber = boardingData?.flight_id || 'AI-102'
+  // Derived values from database response
+  const departureTerminal = flightInfo?.departureTerminal || flightInfo?.departure_terminal
+  const assignedGate = flightInfo?.assignedGate || flightInfo?.assigned_gate
+  const seatAssignment = flightInfo?.seatAssignment || flightInfo?.seat_assignment
+  const flightDate = flightInfo?.flightDate || flightInfo?.flight_date
+  const flightNumber = flightInfo?.flightNumber || boardingData?.flight_id || 'AI-102'
+
   const statusInfo = STATUS_CONFIG[currentStatus]
 
   return (
@@ -89,6 +140,7 @@ export default function FlightTrackingPage() {
           <button
             onClick={() => navigate('/')}
             className="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-[#94A3B8] hover:text-[#F8FAFC] transition-colors"
+            title="Go back"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -114,7 +166,24 @@ export default function FlightTrackingPage() {
       {/* SECTION 1: Circular Boarding Countdown & Progress */}
       <FlightCountdown />
 
-      {/* SECTION 2: Comprehensive Airline Boarding Pass Cards */}
+      {/* Error state banner if backend call fails */}
+      {error && (
+        <div className="p-4 rounded-2xl bg-red-500/10 border border-red-500/30 flex items-center justify-between text-red-400 text-xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span>Database synchronization issue: {error}.</span>
+          </div>
+          <button
+            onClick={fetchFlightData}
+            className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 rounded-lg text-red-300 font-bold flex items-center gap-1 transition-colors"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Retry
+          </button>
+        </div>
+      )}
+
+      {/* SECTION 2: Airline Boarding Pass Cards (Values Loaded Dynamically from DB) */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Left 2 Cols: Flight Spec Card */}
         <div className="md:col-span-2 p-6 rounded-[24px] bg-[#0F1E35] border border-white/10 shadow-xl space-y-6">
@@ -130,43 +199,51 @@ export default function FlightTrackingPage() {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {/* 1. Departure Terminal */}
             <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
               <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Departure Terminal</div>
-              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">{boardingData?.terminal || 'Terminal 2'}</div>
+              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">
+                {loading ? (
+                  <span className="animate-pulse text-[#64748B]">Loading...</span>
+                ) : (
+                  departureTerminal || '—'
+                )}
+              </div>
             </div>
+
+            {/* 2. Assigned Gate */}
             <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
               <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Assigned Gate</div>
-              <div className="text-base font-extrabold text-[#14C8FF] mt-0.5">{gateNumber}</div>
+              <div className="text-base font-extrabold text-[#14C8FF] mt-0.5">
+                {loading ? (
+                  <span className="animate-pulse text-[#64748B]">Loading...</span>
+                ) : (
+                  assignedGate || '—'
+                )}
+              </div>
             </div>
+
+            {/* 3. Seat Assignment */}
             <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
               <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Seat Assignment</div>
-              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">{boardingData?.seat || '12A (Window)'}</div>
+              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">
+                {loading ? (
+                  <span className="animate-pulse text-[#64748B]">Loading...</span>
+                ) : (
+                  seatAssignment || '—'
+                )}
+              </div>
             </div>
+
+            {/* 4. Flight Date */}
             <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
               <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Flight Date</div>
-              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">{boardingData?.date || 'Today'}</div>
-            </div>
-          </div>
-
-          {/* Connection & Weather Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-            <div className="p-4 rounded-2xl bg-[#162742]/60 border border-white/5 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
-                <CloudSun className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="text-[10px] font-bold uppercase text-[#94A3B8]">Destination Weather</div>
-                <div className="text-xs font-bold text-[#F8FAFC]">New Delhi (DEL): 31°C Clear Sky</div>
-              </div>
-            </div>
-
-            <div className="p-4 rounded-2xl bg-[#162742]/60 border border-white/5 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/20 text-[#2F80FF] flex items-center justify-center shrink-0">
-                <Compass className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="text-[10px] font-bold uppercase text-[#94A3B8]">Connection Info</div>
-                <div className="text-xs font-bold text-[#F8FAFC]">Direct Flight • Baggage Through-Checked</div>
+              <div className="text-base font-extrabold text-[#F8FAFC] mt-0.5">
+                {loading ? (
+                  <span className="animate-pulse text-[#64748B]">Loading...</span>
+                ) : (
+                  flightDate || '—'
+                )}
               </div>
             </div>
           </div>
