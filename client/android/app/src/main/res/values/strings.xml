@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">SIPAS</string>
+    <string name="title_activity_main">SIPAS</string>
+    <string name="package_name">com.sipas.airport</string>
+    <string name="custom_url_scheme">com.sipas.airport</string>
+</resources>

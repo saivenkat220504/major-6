@@ -6,18 +6,28 @@ node_modules/
 # Testing
 coverage/
 
-# Production
+# Production builds
 dist/
 build/
 client/dist/
 server/dist/
 
-# Env files
+# Android & Native builds
+*.apk
+*.idsig
+.gradle/
+client/android/.gradle/
+client/android/app/build/
+client/android/build/
+local.properties
+
+# Env files (Keep .env.example tracked)
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+*.env
+**/.env
+**/.env.*
+!**/.env.example
 
 # Database
 server/dev.db
