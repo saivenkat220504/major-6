@@ -6,10 +6,78 @@ import fs from 'fs';
 let firebaseApp: App | null = null;
 
 /**
+ * Helper to safely parse and validate a Firebase Admin Service Account JSON string.
+ * Handles unescaping of newlines in private_key, base64 encoding, surrounding quotes,
+ * and validates that project_id, client_email, and private_key exist.
+ */
+function parseAndValidateServiceAccount(raw: string): any | null {
+  try {
+    let text = raw.trim();
+    if (!text) return null;
+
+    // Strip wrapping quotes if added by environment variable configuration panels
+    if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+      text = text.substring(1, text.length - 1).trim();
+    }
+
+    // Check if value is base64-encoded
+    if (!text.startsWith('{') && /^[A-Za-z0-9+/=]+$/.test(text)) {
+      try {
+        const decoded = Buffer.from(text, 'base64').toString('utf-8').trim();
+        if (decoded.startsWith('{')) {
+          text = decoded;
+        }
+      } catch {
+        // Not base64, continue with original text
+      }
+    }
+
+    const obj = JSON.parse(text);
+
+    // Check if client-side google-services.json was provided by mistake
+    if (obj.project_info && !obj.private_key) {
+      console.error(
+        '[PushNotificationService] ⚠️ Detected client "google-services.json" format instead of Firebase Admin Service Account Private Key.'
+      );
+      console.error(
+        '[PushNotificationService] ℹ️ Requirement: In Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key". Paste that service-account JSON into FIREBASE_SERVICE_ACCOUNT_KEY on Render.'
+      );
+      return null;
+    }
+
+    // Fix escaped newlines in private_key if present
+    if (typeof obj.private_key === 'string' && obj.private_key.includes('\\n')) {
+      obj.private_key = obj.private_key.replace(/\\n/g, '\n');
+    }
+
+    // Validate required fields for Firebase Admin SDK cert()
+    if (!obj.project_id || typeof obj.project_id !== 'string') {
+      console.error('[PushNotificationService] Service account validation failed: missing string "project_id".');
+      return null;
+    }
+
+    if (!obj.client_email || typeof obj.client_email !== 'string') {
+      console.error('[PushNotificationService] Service account validation failed: missing string "client_email".');
+      return null;
+    }
+
+    if (!obj.private_key || typeof obj.private_key !== 'string') {
+      console.error('[PushNotificationService] Service account validation failed: missing string "private_key".');
+      return null;
+    }
+
+    return obj;
+  } catch (err: any) {
+    console.error('[PushNotificationService] JSON parse error on FIREBASE_SERVICE_ACCOUNT_KEY:', err.message);
+    return null;
+  }
+}
+
+/**
  * Attempt to initialize Firebase Admin SDK (v13 modular api).
  * Checks for service account credentials in standard locations:
- * 1. Environment variable FIREBASE_SERVICE_ACCOUNT_KEY (JSON string)
- * 2. File path specified by GOOGLE_APPLICATION_CREDENTIALS
+ * 1. Environment variable FIREBASE_SERVICE_ACCOUNT_KEY (JSON string or base64)
+ * 2. File path specified by GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT_PATH
  * 3. Local file server/firebase-service-account.json
  */
 export function initFirebaseAdmin(): boolean {
@@ -22,30 +90,51 @@ export function initFirebaseAdmin(): boolean {
       return true;
     }
 
+    // 1. Check environment variable FIREBASE_SERVICE_ACCOUNT_KEY
     const jsonEnv = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
     if (jsonEnv) {
-      const serviceAccount = JSON.parse(jsonEnv);
-      firebaseApp = initializeApp({
-        credential: cert(serviceAccount),
-      });
-      console.log('[PushNotificationService] Firebase Admin initialized from FIREBASE_SERVICE_ACCOUNT_KEY env');
-      return true;
+      const serviceAccount = parseAndValidateServiceAccount(jsonEnv);
+      if (serviceAccount) {
+        firebaseApp = initializeApp({
+          credential: cert(serviceAccount),
+        });
+        console.log(`[PushNotificationService] ✅ Firebase Admin initialized successfully for project: ${serviceAccount.project_id}`);
+        return true;
+      }
     }
 
+    // 2. Check GOOGLE_APPLICATION_CREDENTIALS / FIREBASE_SERVICE_ACCOUNT_PATH file path
+    const envPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    if (envPath && fs.existsSync(envPath)) {
+      const fileContent = fs.readFileSync(envPath, 'utf-8');
+      const serviceAccount = parseAndValidateServiceAccount(fileContent);
+      if (serviceAccount) {
+        firebaseApp = initializeApp({
+          credential: cert(serviceAccount),
+        });
+        console.log(`[PushNotificationService] ✅ Firebase Admin initialized from credentials file (${serviceAccount.project_id})`);
+        return true;
+      }
+    }
+
+    // 3. Check local file
     const localKeyPath = path.resolve(__dirname, '../../firebase-service-account.json');
     if (fs.existsSync(localKeyPath)) {
-      const serviceAccount = JSON.parse(fs.readFileSync(localKeyPath, 'utf-8'));
-      firebaseApp = initializeApp({
-        credential: cert(serviceAccount),
-      });
-      console.log('[PushNotificationService] Firebase Admin initialized from local firebase-service-account.json');
-      return true;
+      const fileContent = fs.readFileSync(localKeyPath, 'utf-8');
+      const serviceAccount = parseAndValidateServiceAccount(fileContent);
+      if (serviceAccount) {
+        firebaseApp = initializeApp({
+          credential: cert(serviceAccount),
+        });
+        console.log(`[PushNotificationService] ✅ Firebase Admin initialized from local firebase-service-account.json (${serviceAccount.project_id})`);
+        return true;
+      }
     }
 
-    console.warn('[PushNotificationService] No Firebase credentials found. Running in MOCK notification mode.');
+    console.warn('[PushNotificationService] ⚠️ No valid Firebase Admin credentials found. Server operating in mock notification mode.');
     return false;
-  } catch (err) {
-    console.error('[PushNotificationService] Failed to initialize Firebase Admin:', err);
+  } catch (err: any) {
+    console.error('[PushNotificationService] Failed to initialize Firebase Admin:', err.message);
     return false;
   }
 }
