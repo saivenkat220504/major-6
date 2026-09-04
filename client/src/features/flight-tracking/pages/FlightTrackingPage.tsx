@@ -9,6 +9,7 @@ import {
   AlertCircle,
 } from 'lucide-react'
 import FlightCountdown from '../components/FlightCountdown'
+import { initializePushNotifications } from '../services/pushNotificationService'
 
 interface BoardingData {
   passenger_name?: string
@@ -122,6 +123,15 @@ export default function FlightTrackingPage() {
   useEffect(() => {
     fetchFlightData()
   }, [])
+
+  useEffect(() => {
+    const flightNum = flightInfo?.flightNumber || boardingData?.flight_id || 'AI-102'
+    if (flightNum) {
+      initializePushNotifications(flightNum).catch((e) =>
+        console.error('[FlightTracking] Failed to register push token:', e)
+      )
+    }
+  }, [flightInfo?.flightNumber, boardingData?.flight_id])
 
   // Derived values from database response
   const departureTerminal = flightInfo?.departureTerminal || flightInfo?.departure_terminal

@@ -21,6 +21,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { startTelegramLongPolling } from './services/telegramService';
 import { upsertLocation } from './repositories/trackingRepository';
+import { startFlightChangeWatcher } from './services/flightChangeWatcher';
 
 dotenv.config();
 const app = express();
@@ -138,4 +139,6 @@ startTelegramLongPolling(
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log(`Server listening on ${PORT}`);
+  // Start database change watcher daemon for flight tracking
+  startFlightChangeWatcher(3000);
 });

@@ -29,6 +29,12 @@ local.properties
 **/.env.*
 !**/.env.example
 
+# Service account keys & sensitive credentials
+*service-account*.json
+firebase-service-account.json
+**/firebase-service-account.json
+server/data/
+
 # Database
 server/dev.db
 server/prisma/*.db

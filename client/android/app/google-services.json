@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "300873001283",
+    "project_id": "aero-saathi",
+    "storage_bucket": "aero-saathi.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:300873001283:android:c5a4958f699c91f5b2e7f6",
+        "android_client_info": {
+          "package_name": "com.smartairport.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCDzUcSaLoXuLGmB4AJIBEPKPiYmUW5HU8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
