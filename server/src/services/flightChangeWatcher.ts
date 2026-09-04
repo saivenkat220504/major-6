@@ -1,73 +1,84 @@
+/**
+ * flightChangeWatcher.ts
+ *
+ * CRITICAL FIXES applied:
+ *  1. Flight baseline (terminal/gate last-known state) is now read from and
+ *     written to PostgreSQL via FlightStateSnapshot — survives server restarts.
+ *  2. When no devices are registered for a flight, the watcher logs a warning
+ *     and skips — it does NOT send a mock broadcast to a fake token.
+ *  3. `getTokensForFlight` is properly awaited (it is async/Prisma).
+ *  4. No in-memory state is used as the authoritative baseline.
+ */
+
 import prisma from '../prisma/client';
 import {
   getTokensForFlight,
-  getNotificationHistory,
-  saveNotificationHistory,
+  getFlightStateSnapshot,
+  saveFlightStateSnapshot,
 } from './notificationStorage';
 import { sendPushNotification } from './pushNotificationService';
-
-interface FlightState {
-  flightNumber: string;
-  terminal: string;
-  gate: string;
-  updatedAt?: string;
-}
 
 let isWatcherRunning = false;
 let watcherIntervalTimer: NodeJS.Timeout | null = null;
 
-// Local in-memory tracker of current known DB state
-const knownState: Record<string, FlightState> = {};
-
 /**
- * Format dynamic notification content based on actual detected changes
+ * Format a human-readable notification body based on which fields changed.
  */
 export function buildNotificationContent(
   flightNumber: string,
   oldState: { terminal: string; gate: string },
-  newState: { terminal: string; gate: string }
+  newState: { terminal: string; gate: string },
 ): { title: string; body: string } {
   const terminalChanged = oldState.terminal !== newState.terminal;
   const gateChanged = oldState.gate !== newState.gate;
 
   const title = 'Flight Update';
-  let body = '';
+  let body: string;
 
   if (terminalChanged && gateChanged) {
-    body = `Your flight ${flightNumber} terminal has been changed to ${newState.terminal} and gate to ${newState.gate}.\nTerminal: ${newState.terminal}\nGate: ${newState.gate}`;
+    body =
+      `Your flight ${flightNumber} terminal has been changed to ${newState.terminal} ` +
+      `and gate to ${newState.gate}.\nTerminal: ${newState.terminal}\nGate: ${newState.gate}`;
   } else if (gateChanged) {
     body = `Your flight gate has been changed to ${newState.gate}.\nTerminal: ${newState.terminal}`;
   } else if (terminalChanged) {
     body = `Your flight terminal has been changed to ${newState.terminal}.\nGate: ${newState.gate}`;
   } else {
-    body = `Your flight ${flightNumber} information has been updated.\nTerminal: ${newState.terminal}\nGate: ${newState.gate}`;
+    body =
+      `Your flight ${flightNumber} information has been updated.\n` +
+      `Terminal: ${newState.terminal}\nGate: ${newState.gate}`;
   }
 
   return { title, body };
 }
 
 /**
- * Single check iteration across all flight_info records in the database.
- * Detects terminal and gate changes, verifies against persistent history,
- * dispatches notifications, and saves updated history.
+ * Single iteration: read all flight_info rows, compare each against the
+ * persisted FlightStateSnapshot baseline, dispatch FCM notifications for
+ * any changed flights, then update the baseline in the database.
+ *
+ * This function is safe to call across server restarts because all state
+ * it depends on is stored in PostgreSQL.
  */
-export async function checkFlightChanges(): Promise<{ changesDetected: number; notificationsSent: number }> {
+export async function checkFlightChanges(): Promise<{
+  changesDetected: number;
+  notificationsSent: number;
+}> {
   let changesDetected = 0;
   let notificationsSent = 0;
 
   try {
-    // 1. Fetch current flight records from database
+    // 1. Fetch current flight records from the database
     let records: any[] = [];
     try {
-      records = await (prisma as any).flightInfo?.findMany();
+      records = await (prisma as any).flightInfo?.findMany() ?? [];
     } catch {
+      // Fallback: raw SQL (defensive – model name mismatch edge case)
       try {
-        const rawRecords: any = await prisma.$queryRawUnsafe(
-          `SELECT * FROM "flight_info" ORDER BY "updated_at" DESC`
+        const raw: any = await prisma.$queryRawUnsafe(
+          `SELECT * FROM "flight_info" ORDER BY "updated_at" DESC`,
         );
-        if (Array.isArray(rawRecords)) {
-          records = rawRecords;
-        }
+        if (Array.isArray(raw)) records = raw;
       } catch (rawErr) {
         console.warn('[FlightWatcher] Raw query failed:', rawErr);
       }
@@ -77,105 +88,84 @@ export async function checkFlightChanges(): Promise<{ changesDetected: number; n
       return { changesDetected: 0, notificationsSent: 0 };
     }
 
-    // 2. Load persistent notification history (to prevent duplicates even across server restarts)
-    const history = getNotificationHistory();
-
     for (const record of records) {
-      const flightNum = (record.flightNumber || record.flight_number || 'AI-102').trim().toUpperCase();
-      const currentTerminal = (record.departureTerminal || record.departure_terminal || '').trim();
+      const flightNum = (
+        record.flightNumber || record.flight_number || 'AI-102'
+      )
+        .trim()
+        .toUpperCase();
+      const currentTerminal = (
+        record.departureTerminal || record.departure_terminal || ''
+      ).trim();
       const currentGate = (record.assignedGate || record.assigned_gate || '').trim();
 
       if (!currentTerminal && !currentGate) continue;
 
-      const previousRecorded = history[flightNum];
-      const previousInMem = knownState[flightNum];
+      // 2. Load the persisted baseline from PostgreSQL
+      const snapshot = await getFlightStateSnapshot(flightNum);
 
-      // If we have no baseline yet (e.g. first run / newly created flight), record current state as baseline
-      if (!previousRecorded && !previousInMem) {
-        knownState[flightNum] = {
-          flightNumber: flightNum,
-          terminal: currentTerminal,
-          gate: currentGate,
-        };
-        history[flightNum] = {
-          flightNumber: flightNum,
-          terminal: currentTerminal,
-          gate: currentGate,
-          timestamp: new Date().toISOString(),
-        };
-        saveNotificationHistory(history);
+      if (!snapshot) {
+        // No baseline yet — record current state as the starting point.
+        // Do NOT send a notification; we have no previous value to compare.
+        await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
+        console.log(
+          `[FlightWatcher] Initialised baseline for ${flightNum}: terminal=${currentTerminal}, gate=${currentGate}`,
+        );
         continue;
       }
 
-      // Prioritize persistent history baseline to survive restarts
-      const baseline = previousRecorded || previousInMem;
-      const terminalChanged = baseline.terminal !== currentTerminal;
-      const gateChanged = baseline.gate !== currentGate;
+      const terminalChanged = snapshot.terminal !== currentTerminal;
+      const gateChanged = snapshot.gate !== currentGate;
 
-      // Meaningful change check: Gate or Terminal change
-      if (terminalChanged || gateChanged) {
-        changesDetected++;
-        console.log(`[FlightWatcher] ✈ Change detected for flight ${flightNum}:`);
-        console.log(`  Terminal: "${baseline.terminal}" → "${currentTerminal}"`);
-        console.log(`  Gate:     "${baseline.gate}" → "${currentGate}"`);
-
-        // Generate dynamic notification payload
-        const payload = buildNotificationContent(
-          flightNum,
-          { terminal: baseline.terminal, gate: baseline.gate },
-          { terminal: currentTerminal, gate: currentGate }
-        );
-
-        // Retrieve target tokens registered for this flight
-        const tokens = await getTokensForFlight(flightNum);
-
-        // Dispatch push notification
-        if (tokens.length > 0) {
-          await sendPushNotification(tokens, {
-            ...payload,
-            data: {
-              flightNumber: flightNum,
-              terminal: currentTerminal,
-              gate: currentGate,
-              type: 'FLIGHT_CHANGE',
-            },
-          });
-          notificationsSent += tokens.length;
-        } else {
-          // If no specific token is registered for this flight, also notify in mock console for testing
-          console.log(`[FlightWatcher] Note: No devices currently registered for flight ${flightNum}. Dispatched mock broadcast:`);
-          await sendPushNotification(['mock-device-local-test-token'], {
-            ...payload,
-            data: {
-              flightNumber: flightNum,
-              terminal: currentTerminal,
-              gate: currentGate,
-              type: 'FLIGHT_CHANGE',
-            },
-          });
-        }
-
-        // Update persistent history to prevent duplicate notifications
-        history[flightNum] = {
-          flightNumber: flightNum,
-          terminal: currentTerminal,
-          gate: currentGate,
-          timestamp: new Date().toISOString(),
-        };
-        saveNotificationHistory(history);
-
-        // Update in-memory state
-        knownState[flightNum] = {
-          flightNumber: flightNum,
-          terminal: currentTerminal,
-          gate: currentGate,
-        };
-      } else {
-        // No change detected: keep baseline, do not send duplicate
+      if (!terminalChanged && !gateChanged) {
+        // No change — nothing to do.
+        continue;
       }
+
+      changesDetected++;
+      console.log(`[FlightWatcher] ✈ Change detected for flight ${flightNum}:`);
+      console.log(`  Terminal: "${snapshot.terminal}" → "${currentTerminal}"`);
+      console.log(`  Gate:     "${snapshot.gate}" → "${currentGate}"`);
+
+      // 3. Build notification payload
+      const payload = buildNotificationContent(
+        flightNum,
+        { terminal: snapshot.terminal, gate: snapshot.gate },
+        { terminal: currentTerminal, gate: currentGate },
+      );
+
+      // 4. Retrieve registered device tokens from PostgreSQL
+      const tokens = await getTokensForFlight(flightNum);
+
+      if (tokens.length === 0) {
+        // No registered devices — skip silently. Do NOT use mock tokens.
+        console.warn(
+          `[FlightWatcher] ⚠ No registered devices found in DB for flight ${flightNum}. ` +
+            `Notification skipped. (The device must call /register-device first.)`,
+        );
+      } else {
+        // 5. Dispatch real FCM push notification
+        const result = await sendPushNotification(tokens, {
+          ...payload,
+          data: {
+            flightNumber: flightNum,
+            terminal: currentTerminal,
+            gate: currentGate,
+            type: 'FLIGHT_CHANGE',
+          },
+        });
+        notificationsSent += result.successCount;
+        console.log(
+          `[FlightWatcher] FCM dispatched to ${tokens.length} device(s): ` +
+            `${result.successCount} success, ${result.failureCount} failed`,
+        );
+      }
+
+      // 6. Persist updated baseline AFTER notification is sent
+      await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
     }
   } catch (err) {
-    console.error('[FlightWatcher] Error checking flight changes:', err);
+    console.error('[FlightWatcher] Error during flight change check:', err);
   }
 
   return { changesDetected, notificationsSent };
@@ -183,29 +173,30 @@ export async function checkFlightChanges(): Promise<{ changesDetected: number; n
 
 /**
  * Start the background polling watcher.
- * Default interval: 3000ms (3 seconds) for responsive local testing without overloading PostgreSQL.
+ * Default interval: 3 000 ms — responsive without overloading PostgreSQL.
  */
 export function startFlightChangeWatcher(intervalMs = 3000): void {
   if (isWatcherRunning) {
-    console.log('[FlightWatcher] Watcher is already running.');
+    console.log('[FlightWatcher] Watcher already running.');
     return;
   }
 
   isWatcherRunning = true;
-  console.log(`[FlightWatcher] Starting background flight change watcher (interval: ${intervalMs}ms)...`);
+  console.log(
+    `[FlightWatcher] Starting background watcher (interval: ${intervalMs}ms)...`,
+  );
 
-  // Run initial check immediately to initialize baselines
-  checkFlightChanges().catch((err) => console.error('[FlightWatcher] Initial check failed:', err));
+  // Run an initial check immediately so the baselines are loaded / refreshed
+  checkFlightChanges().catch((err) =>
+    console.error('[FlightWatcher] Initial check failed:', err),
+  );
 
-  // Start periodic watcher
   watcherIntervalTimer = setInterval(async () => {
     await checkFlightChanges();
   }, intervalMs);
 }
 
-/**
- * Stop the background watcher daemon
- */
+/** Stop the background watcher. */
 export function stopFlightChangeWatcher(): void {
   if (watcherIntervalTimer) {
     clearInterval(watcherIntervalTimer);

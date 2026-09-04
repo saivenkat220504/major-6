@@ -50,12 +50,12 @@ model Flight {
 }
 
 model LuggageGuide {
-  id         String @id @default(uuid())
-  category   String
-  stepNumber Int
-  title      String
+  id          String @id @default(uuid())
+  category    String
+  stepNumber  Int
+  title       String
   description String
-  voiceText  String
+  voiceText   String
 }
 
 // ── Aura AI Chat History ──────────────────────────────────────────────────────
@@ -158,4 +158,21 @@ model DeviceSubscription {
 
   @@unique([flightNumber, deviceToken])
   @@map("device_subscriptions")
+}
+
+// ── Flight State Snapshots (watcher baseline – persisted across restarts) ──────
+// Stores the last-known terminal+gate for each flight so the change-detection
+// baseline is never lost when the server restarts or redeploys on Render.
+// FIX: Without this table, every restart wipes the in-memory baseline and
+// the first watcher cycle silently swallows any changes made while the
+// server was down — no notification is ever sent for those changes.
+
+model FlightStateSnapshot {
+  flightNumber String   @id @map("flight_number")
+  terminal     String
+  gate         String
+  recordedAt   DateTime @default(now()) @map("recorded_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("flight_state_snapshots")
 }

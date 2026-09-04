@@ -1,12 +1,25 @@
-import { PrismaClient } from '@prisma/client';
+/**
+ * notificationStorage.ts
+ *
+ * CRITICAL FIX (reliability):
+ *   All device registrations are stored permanently in PostgreSQL via Prisma.
+ *   The flight-watcher baseline (terminal/gate last seen) is also stored in
+ *   PostgreSQL so it survives Render restarts and redeployments.
+ *
+ *   Root causes fixed:
+ *   1. Previously used local JSON files → gone on every Render deploy.
+ *   2. Watcher baseline was in-memory only → first check after restart would
+ *      record the current state AS the new baseline, silently swallowing any
+ *      gate change that happened while the server was down.
+ *   3. Used a local `new PrismaClient()` instead of the shared singleton,
+ *      risking connection-pool exhaustion under load.
+ */
 
-const prisma = new PrismaClient();
+import prisma from '../prisma/client';
 
 // ─── Type Exports ─────────────────────────────────────────────────────────────
 
-/**
- * Lightweight view of a registered device subscription (no DB internals exposed).
- */
+/** Lightweight view of a registered device subscription. */
 export interface DeviceSubscription {
   token: string;
   flightNumber: string;
@@ -14,36 +27,19 @@ export interface DeviceSubscription {
   updatedAt: string;
 }
 
-/**
- * Notification state stored per flight for change-detection deduplication.
- * Kept in-memory only; the app restarts clean which is acceptable since the
- * database already prevents duplicate device registrations.
- */
-export interface NotificationHistoryItem {
+/** Persisted notification baseline per flight. */
+export interface FlightStateSnapshot {
   flightNumber: string;
   terminal: string;
   gate: string;
-  timestamp: string;
+  recordedAt: string;
 }
 
-// ─── In-memory notification history (deduplication) ──────────────────────────
-
-let _notificationHistory: Record<string, NotificationHistoryItem> = {};
-
-export function getNotificationHistory(): Record<string, NotificationHistoryItem> {
-  return _notificationHistory;
-}
-
-export function saveNotificationHistory(history: Record<string, NotificationHistoryItem>): void {
-  _notificationHistory = history;
-}
-
-// ─── Database-backed device registration ─────────────────────────────────────
+// ─── Device registration (PostgreSQL) ────────────────────────────────────────
 
 /**
  * Register or update a device token for a given flight.
- * Uses upsert so that registering the same (flightNumber, token) pair again
- * simply refreshes the updatedAt timestamp instead of creating a duplicate row.
+ * Upserts on (flightNumber, deviceToken) – never creates duplicates.
  */
 export async function registerDeviceToken(
   token: string,
@@ -59,19 +55,12 @@ export async function registerDeviceToken(
         deviceToken: token,
       },
     },
-    update: {
-      platform,
-      // updatedAt is handled automatically by @updatedAt
-    },
-    create: {
-      deviceToken: token,
-      flightNumber: normalizedFlight,
-      platform,
-    },
+    update: { platform },
+    create: { deviceToken: token, flightNumber: normalizedFlight, platform },
   });
 
   console.log(
-    `[NotificationStorage] Upserted device registration for flight ${normalizedFlight} (token: ${maskToken(token)})`,
+    `[NotificationStorage] Upserted device for flight ${normalizedFlight} (token: ${maskToken(token)})`,
   );
 
   return {
@@ -83,9 +72,8 @@ export async function registerDeviceToken(
 }
 
 /**
- * Return the distinct set of device tokens registered for a specific flight.
- * Duplicates are eliminated at the DB level (unique constraint) but we
- * additionally deduplicate here in-memory as a defence-in-depth measure.
+ * Return the distinct device tokens registered for a specific flight.
+ * Queries PostgreSQL on every call – never uses in-memory state.
  */
 export async function getTokensForFlight(flightNumber: string): Promise<string[]> {
   const normalizedFlight = flightNumber.trim().toUpperCase();
@@ -95,7 +83,12 @@ export async function getTokensForFlight(flightNumber: string): Promise<string[]
     select: { deviceToken: true },
   });
 
-  // Deduplicate token strings (should be a no-op due to DB unique constraint)
+  console.log(
+    `[NotificationStorage] Found ${records.length} registered device(s) in DB for flight ${normalizedFlight}`,
+  );
+
+  // Deduplicate token strings (DB unique constraint should prevent duplicates,
+  // but we deduplicate here as defence-in-depth)
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const r of records) {
@@ -104,13 +97,10 @@ export async function getTokensForFlight(flightNumber: string): Promise<string[]
       tokens.push(r.deviceToken);
     }
   }
-
   return tokens;
 }
 
-/**
- * Return all registered device subscriptions (admin/diagnostic use).
- */
+/** Return all registered device subscriptions (admin/diagnostic use). */
 export async function getDeviceSubscriptions(): Promise<DeviceSubscription[]> {
   const records = await prisma.deviceSubscription.findMany({
     orderBy: { updatedAt: 'desc' },
@@ -122,6 +112,44 @@ export async function getDeviceSubscriptions(): Promise<DeviceSubscription[]> {
     platform: r.platform,
     updatedAt: r.updatedAt.toISOString(),
   }));
+}
+
+// ─── Flight state snapshots (PostgreSQL – survives restarts) ─────────────────
+
+/**
+ * Load the persisted baseline for a flight from PostgreSQL.
+ * Returns null if no baseline has been recorded yet (new flight).
+ */
+export async function getFlightStateSnapshot(
+  flightNumber: string,
+): Promise<FlightStateSnapshot | null> {
+  const record = await prisma.flightStateSnapshot.findUnique({
+    where: { flightNumber },
+  });
+  if (!record) return null;
+  return {
+    flightNumber: record.flightNumber,
+    terminal: record.terminal,
+    gate: record.gate,
+    recordedAt: record.recordedAt.toISOString(),
+  };
+}
+
+/**
+ * Persist (upsert) the last-known terminal+gate for a flight.
+ * Called by the watcher after successfully dispatching a notification,
+ * and also when initialising a new flight baseline.
+ */
+export async function saveFlightStateSnapshot(
+  flightNumber: string,
+  terminal: string,
+  gate: string,
+): Promise<void> {
+  await prisma.flightStateSnapshot.upsert({
+    where: { flightNumber },
+    update: { terminal, gate },
+    create: { flightNumber, terminal, gate },
+  });
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
