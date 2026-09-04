@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Send, Loader, Plus, MessageSquare, Menu, Trash2, Mic, Square } from 'lucide-react';
+import { X, Send, Loader, Plus, MessageSquare, Menu, Trash2, Mic, Square, Camera, Volume2, VolumeX, StopCircle } from 'lucide-react';
 import { pois, findShortestPath } from '../../navigation/data/mapData';
 import { cleanSpeechTranscript } from '../../../utils/speechUtils';
 
@@ -25,6 +25,11 @@ interface DisplayMessage {
   role: 'user' | 'aura';
   text: string;
   timestamp: Date;
+  action?: any;
+  imageUrl?: string;   // base64 preview for user-uploaded image
+  translatedText?: string; // final translated text for listen action
+  originalOcr?: string; // raw OCR text before translation, for retranslation
+  currentLang?: string; // code of language currently translated to
 }
 
 interface AuraModalProps {
@@ -93,27 +98,84 @@ function renderFormattedText(text: string) {
   });
 }
 
-function MsgBubble({ msg }: { msg: DisplayMessage }) {
+function MsgBubble({ msg, onActionClick, onListenClick, ttsPlayingMsgId }: {
+  msg: DisplayMessage;
+  onActionClick?: (action: any) => void;
+  onListenClick?: (text: string, lang: string, msgId: string) => void;
+  ttsPlayingMsgId?: string | null;
+}) {
   const isUser = msg.role === 'user';
   const time = msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
   if (isUser) {
     return (
       <div className="flex justify-end mb-3 aura-fade-up">
-        <div className="max-w-[78%]">
-          <div className="px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed text-white shadow-lg"
-            style={{ background: 'linear-gradient(135deg,#2563eb,#4f46e5)' }}>{renderFormattedText(msg.text)}</div>
+        <div className="max-w-[80%]">
+          {msg.imageUrl && (
+            <img
+              src={msg.imageUrl}
+              alt="Uploaded board"
+              className="rounded-2xl rounded-br-sm mb-1 max-h-48 w-full object-cover border border-white/10"
+            />
+          )}
+          {msg.text && (
+            <div className="px-4 py-3 rounded-2xl rounded-br-sm text-sm leading-relaxed text-white shadow-lg"
+              style={{ background: 'linear-gradient(135deg,#2563eb,#4f46e5)' }}>{renderFormattedText(msg.text)}</div>
+          )}
           <div className="text-[10px] text-right mt-1 text-slate-400">{time}</div>
         </div>
       </div>
     );
   }
+
+  const isListenAction = msg.action?.type === 'listen';
+  const isScanAction = msg.action?.type === 'scan_board';
+  const isPlaying = ttsPlayingMsgId === msg.id;
+
   return (
     <div className="flex items-end gap-2 mb-3 aura-fade-up">
       <div className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-white text-xs font-bold"
         style={{ background: 'linear-gradient(135deg,#2563eb,#7c3aed)' }}>A</div>
-      <div className="max-w-[78%]">
+      <div className="max-w-[82%]">
         <div className="bg-white/10 border border-white/10 rounded-2xl rounded-bl-sm px-4 py-3 text-sm leading-relaxed text-slate-100 whitespace-pre-wrap">
-          {renderFormattedText(msg.text)}</div>
+          {renderFormattedText(msg.text)}
+
+          {/* Scan / Upload Board action button */}
+          {isScanAction && (
+            <button
+              onClick={() => onActionClick && onActionClick(msg.action)}
+              className="mt-3 w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 px-4 rounded-xl shadow-lg text-sm transition-colors active:scale-95"
+            >
+              <Camera size={16} />
+              {msg.action.label || '📷 Scan / Upload Board'}
+            </button>
+          )}
+
+          {/* Listen (TTS) action button */}
+          {isListenAction && (
+            <button
+              onClick={() => onListenClick && onListenClick(msg.translatedText || msg.text, msg.action.lang || 'en', msg.id)}
+              className={`mt-3 w-full flex items-center justify-center gap-2 font-bold py-2.5 px-4 rounded-xl shadow-lg text-sm transition-colors active:scale-95 ${
+                isPlaying
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
+            >
+              {isPlaying ? <StopCircle size={16} /> : <Volume2 size={16} />}
+              {isPlaying ? '⏹ Stop Audio' : '🔊 Listen'}
+            </button>
+          )}
+
+          {/* Generic action button (food, transit, navigation etc.) */}
+          {msg.action && !isScanAction && !isListenAction && (
+            <button
+              onClick={() => onActionClick && onActionClick(msg.action)}
+              className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded-xl shadow-lg flex items-center justify-center gap-2 text-sm transition-colors active:scale-95"
+            >
+              {msg.action.label || 'Continue'}
+            </button>
+          )}
+        </div>
         <div className="text-[10px] mt-1 text-slate-400">{time}</div>
       </div>
     </div>
@@ -156,6 +218,50 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
   const recognitionRef = useRef<any>(null);
   const liveTranscriptRef = useRef('');
   const finalTranscriptRef = useRef('');
+
+  // ── Image / OCR / TTS state ──────────────────────────────────────────────
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const [isOcrProcessing, setIsOcrProcessing] = useState(false);
+  const [targetLang, setTargetLang] = useState('en'); // BCP-47 language code
+  const [ttsPlayingMsgId, setTtsPlayingMsgId] = useState<string | null>(null);
+  const lastOcrTextRef = useRef<string>(''); // Keeps the latest scanned raw text for live re-translation
+  const lastOcrMsgIdRef = useRef<string | null>(null);
+
+  // Language options shown in the selector
+  const LANG_OPTIONS = [
+    { code: 'en', label: 'English' },
+    { code: 'te', label: 'Telugu' },
+    { code: 'hi', label: 'Hindi' },
+    { code: 'ta', label: 'Tamil' },
+    { code: 'kn', label: 'Kannada' },
+    { code: 'ml', label: 'Malayalam' },
+    { code: 'mr', label: 'Marathi' },
+    { code: 'bn', label: 'Bengali' },
+    { code: 'ur', label: 'Urdu' },
+    { code: 'fr', label: 'French' },
+    { code: 'de', label: 'German' },
+    { code: 'ar', label: 'Arabic' },
+    { code: 'zh', label: 'Chinese' },
+    { code: 'ja', label: 'Japanese' },
+    { code: 'es', label: 'Spanish' },
+  ];
+
+  // Helper to translate text using MyMemory API with fallback
+  const translateWithFallback = async (sourceText: string, toLang: string): Promise<string> => {
+    if (!sourceText.trim() || toLang === 'en') return sourceText;
+    try {
+      const resp = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(sourceText)}&langpair=en|${toLang}`
+      );
+      const json = await resp.json();
+      if (json?.responseStatus === 200 && json.responseData?.translatedText) {
+        return json.responseData.translatedText;
+      }
+    } catch (err) {
+      console.warn('[Aura] MyMemory translation error:', err);
+    }
+    return sourceText;
+  };
 
   const msgEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -204,16 +310,37 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
 
   // ── API actions ───────────────────────────────────────────────────────────
   const initChats = async () => {
+    // If already have an active chat loaded in state, keep using it
+    if (activeChatId && messages.length > 0) {
+      return;
+    }
+
     setIsInitializing(true);
     try {
       const data: AuraChat[] = await apiFetch('/api/aura/chats');
       setChats(data);
-      // Automatically create and select a clean new chat session when opening
-      const newChat: AuraChat = await apiFetch('/api/aura/new-chat', { method: 'POST' });
-      setChats(prev => [newChat, ...prev]);
-      setActiveChatId(newChat.id);
+
+      const savedChatId = localStorage.getItem('aura_last_chat_id');
+      const chatToSelect = data.find(c => c.id === savedChatId) || data[0];
+
+      if (chatToSelect) {
+        // Reuse old/existing chat
+        setActiveChatId(chatToSelect.id);
+        localStorage.setItem('aura_last_chat_id', chatToSelect.id);
+      } else {
+        // Only create a new chat if no chats exist at all
+        const newChat: AuraChat = await apiFetch('/api/aura/new-chat', { method: 'POST' });
+        setChats([newChat]);
+        setActiveChatId(newChat.id);
+        localStorage.setItem('aura_last_chat_id', newChat.id);
+      }
     } catch (e) {
       console.error('[AuraModal] initChats error', e);
+      // Fallback: create a local fallback session
+      if (!activeChatId) {
+        const fallbackId = 'chat-default';
+        setActiveChatId(fallbackId);
+      }
     } finally {
       setIsInitializing(false);
     }
@@ -237,6 +364,7 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
       const newChat: AuraChat = await apiFetch('/api/aura/new-chat', { method: 'POST' });
       setChats(prev => [newChat, ...prev]);
       setActiveChatId(newChat.id);
+      localStorage.setItem('aura_last_chat_id', newChat.id);
       setSidebarOpen(false);
     } catch (e) {
       console.error('[AuraModal] createChat error', e);
@@ -283,104 +411,178 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     setMessages(prev => [...prev, userMsg]);
     const currentPassenger = getPassengerData() || passenger;
 
-    try {
-      const data = await apiFetch('/api/aura/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chatId,
-          message: text,
-          passenger: currentPassenger,
-          flightTrackingData: {
-            countdown: "01h 18m",
-            gate: currentPassenger?.gate || "Gate 14B",
-            status: "Boarding Soon"
-          },
-          destinations: pois.map(p => {
-            let path = [];
-            try { path = findShortestPath('main_entrance', p.id); } catch { }
-            let dist = 0;
-            if (path && path.length > 0) {
-              for (let i = 0; i < path.length - 1; i++) {
-                dist += Math.sqrt(
-                  Math.pow(path[i].x - path[i + 1].x, 2) +
-                  Math.pow(path[i].y - path[i + 1].y, 2)
-                );
-              }
-            }
-            return {
-              id: p.id,
-              label: p.label,
-              category: p.category,
-              distance: Math.round(dist * 1.2)
-            };
-          })
-        }),
-      });
+      try {
+        const { resolveIntent } = await import('../services/intentResolver');
+        const resolved = resolveIntent(text);
+        
+        let auraMsg: DisplayMessage = {
+          id: nextId(),
+          role: 'aura',
+          text: resolved.response,
+          timestamp: new Date(),
+          action: resolved.action
+        };
+        
+        setMessages(prev => [...prev, auraMsg]);
 
-      const auraMsg: DisplayMessage = {
+        // Bump the chat to top in the sidebar list (update updatedAt locally)
+        setChats(prev =>
+          [
+            { ...prev.find(c => c.id === chatId)!, updatedAt: new Date().toISOString() },
+            ...prev.filter(c => c.id !== chatId),
+          ]
+        );
+      } catch (err: any) {
+        const errTxt = err.message || 'Failed to get a response. Please try again.';
+        setError(errTxt);
+        setMessages(prev => [...prev, { id: nextId(), role: 'aura', text: `⚠️ ${errTxt}`, timestamp: new Date() }]);
+      } finally {
+        setIsLoading(false);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }
+    }, [input, isLoading, activeChatId, passenger]); // eslint-disable-line
+
+  // ── Image Upload & OCR Handler ────────────────────────────────────────────
+  const handleImageChosen = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (imageInputRef.current) imageInputRef.current.value = '';
+
+    // 1. Read image as base64 and add as user bubble with preview
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target?.result as string;
+      if (!base64) return;
+
+      const userImgMsg: DisplayMessage = {
         id: nextId(),
-        role: 'aura',
-        text: data.response,
+        role: 'user',
+        text: '📷 Uploaded a board / sign image',
+        imageUrl: base64,
         timestamp: new Date(),
       };
-      setMessages(prev => [...prev, auraMsg]);
+      setMessages(prev => [...prev, userImgMsg]);
+      setIsOcrProcessing(true);
 
-      // Automatically trigger navigation or tool page navigation without closing Aura chat
-      if (data.action?.type === 'route' || (data.action?.type === 'navigate' && data.action?.from && data.action?.to)) {
-        const from = data.action.from;
-        const to = data.action.to;
-        navigate(`/navigation?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { state: { from, to } });
-      } else if (data.action?.type === 'navigate' && data.action?.poiId) {
-        sessionStorage.setItem('autoSelectPoiId', data.action.poiId);
-        navigate('/navigation', { state: { autoSelectPoiId: data.action.poiId } });
-      } else if (data.action?.type === 'navigate') {
-        navigate('/navigation');
-      } else if (data.action?.type === 'customer_support') {
-        navigate('/chat');
-      } else if (data.action?.type === 'baggage_guidance') {
-        if (data.action?.autoCheckTag) {
-          sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
+      // 2. Run OCR via Tesseract.js
+      try {
+        const Tesseract = await import('tesseract.js');
+        const { data: { text: ocrText } } = await Tesseract.recognize(base64, 'eng', {
+          logger: () => {},
+        });
+
+        const cleanedOcr = ocrText.trim();
+        if (!cleanedOcr) {
+          const failMsg: DisplayMessage = {
+            id: nextId(), role: 'aura',
+            text: "I couldn't extract any text from the image. Please make sure the board text is clearly visible and well-lit. Try again.",
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, failMsg]);
+          setIsOcrProcessing(false);
+          return;
         }
-        navigate('/baggage-guidance');
-      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services' || data.action?.type === 'transit') {
-        navigate('/transit-services');
-      } else if (data.action?.type === 'flight_tracking') {
-        navigate('/flight-tracking');
-      } else if (data.action?.type === 'meal_delivery') {
-        navigate('/meal-delivery');
-      } else if (data.action?.type === 'emergency_contact' || data.action?.type === 'emergency') {
-        navigate('/emergency-contact');
-      } else if (data.action?.type === 'staff_dashboard') {
-        navigate('/emergency-contact/staff-dashboard');
-      } else if (data.action?.type === 'personal_guardian' || data.action?.type === 'personal_mentor') {
-        navigate('/personal-guardian');
-      } else if (data.action?.type === 'translate' || data.action?.type === 'translation') {
-        navigate('/translate');
-      } else if (data.action?.type === 'boarding_pass') {
-        navigate('/boarding-pass');
-      } else if (data.action?.type === 'profile') {
-        navigate('/profile');
-      } else if (data.action?.type === 'event_scheduler') {
-        navigate('/event-scheduler', { state: { eventName: data.action.eventName, eventTime: data.action.eventTime } });
-      }
 
-      // Bump the chat to top in the sidebar list (update updatedAt locally)
-      setChats(prev =>
-        [
-          { ...prev.find(c => c.id === chatId)!, updatedAt: new Date().toISOString() },
-          ...prev.filter(c => c.id !== chatId),
-        ]
-      );
-    } catch (err: any) {
-      const errTxt = err.message || 'Failed to get a response. Please try again.';
-      setError(errTxt);
-      setMessages(prev => [...prev, { id: nextId(), role: 'aura', text: `⚠️ ${errTxt}`, timestamp: new Date() }]);
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => inputRef.current?.focus(), 50);
+        // Cache the latest OCR text for live re-translation on language change
+        lastOcrTextRef.current = cleanedOcr;
+
+        // 3. Translate using MyMemory API
+        const translatedText = await translateWithFallback(cleanedOcr, targetLang);
+        const langLabel = LANG_OPTIONS.find(l => l.code === targetLang)?.label || 'English';
+        const sameLanguage = targetLang === 'en';
+
+        // 4. Post result as Aura bubble with listen action
+        const resultMsgId = nextId();
+        lastOcrMsgIdRef.current = resultMsgId;
+
+        const resultMsg: DisplayMessage = {
+          id: resultMsgId,
+          role: 'aura',
+          text: sameLanguage
+            ? `✅ **Text found on board:**\n\n${cleanedOcr}\n\nClick the button below to hear it read aloud.`
+            : `✅ **Original Text:**\n${cleanedOcr}\n\n🌐 **Translated to ${langLabel}:**\n${translatedText}\n\nClick the button below to hear the translation.`,
+          translatedText,
+          originalOcr: cleanedOcr,
+          currentLang: targetLang,
+          timestamp: new Date(),
+          action: { type: 'listen', label: '🔊 Listen', lang: targetLang },
+        };
+        setMessages(prev => [...prev, resultMsg]);
+      } catch (ocrErr: any) {
+        const errMsg: DisplayMessage = {
+          id: nextId(), role: 'aura',
+          text: `⚠️ OCR failed: ${ocrErr?.message || 'Unknown error'}. Please try a clearer image.`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, errMsg]);
+      } finally {
+        setIsOcrProcessing(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  }, [targetLang, LANG_OPTIONS]); // eslint-disable-line
+
+  // ── Language Change Handler with Live Re-translation ─────────────────────
+  const handleLanguageChange = async (newLang: string) => {
+    setTargetLang(newLang);
+
+    // If there is a recent board OCR in chat, re-translate it in real time!
+    const rawOcr = lastOcrTextRef.current;
+    if (rawOcr) {
+      setIsOcrProcessing(true);
+      try {
+        const langLabel = LANG_OPTIONS.find(l => l.code === newLang)?.label || 'English';
+        const translated = await translateWithFallback(rawOcr, newLang);
+        const sameLanguage = newLang === 'en';
+
+        // Update the existing result message or append a new translation bubble
+        const resultMsgId = nextId();
+        lastOcrMsgIdRef.current = resultMsgId;
+
+        const newMsg: DisplayMessage = {
+          id: resultMsgId,
+          role: 'aura',
+          text: sameLanguage
+            ? `✅ **Text found on board (English):**\n\n${rawOcr}\n\nClick the button below to hear it read aloud.`
+            : `🌐 **Translated to ${langLabel}:**\n${translated}\n\nOriginal: "${rawOcr}"\n\nClick the button below to hear the translation.`,
+          translatedText: translated,
+          originalOcr: rawOcr,
+          currentLang: newLang,
+          timestamp: new Date(),
+          action: { type: 'listen', label: '🔊 Listen', lang: newLang },
+        };
+        setMessages(prev => [...prev, newMsg]);
+      } catch (e) {
+        console.warn('[Aura] re-translation failed:', e);
+      } finally {
+        setIsOcrProcessing(false);
+      }
     }
-  }, [input, isLoading, activeChatId, passenger]); // eslint-disable-line
+  };
+
+  // ── TTS Listen Handler ────────────────────────────────────────────────────
+  const handleListenClick = useCallback((text: string, lang: string, msgId: string) => {
+    if (!window.speechSynthesis) {
+      alert('Text-to-speech is not supported on this device/browser.');
+      return;
+    }
+    // If already playing this message — stop it
+    if (ttsPlayingMsgId === msgId) {
+      window.speechSynthesis.cancel();
+      setTtsPlayingMsgId(null);
+      return;
+    }
+    // Stop any existing speech
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = lang;
+    utterance.rate = 0.9;
+    utterance.onstart = () => setTtsPlayingMsgId(msgId);
+    utterance.onend = () => setTtsPlayingMsgId(null);
+    utterance.onerror = () => setTtsPlayingMsgId(null);
+    window.speechSynthesis.speak(utterance);
+  }, [ttsPlayingMsgId]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -414,77 +616,17 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     const currentPassenger = getPassengerData() || passenger;
 
     try {
-      const data = await apiFetch('/api/aura/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chatId,
-          message: text,
-          passenger: currentPassenger,
-          flightTrackingData: {
-            countdown: '01h 18m',
-            gate: currentPassenger?.gate || 'Gate 14B',
-            status: 'Boarding Soon',
-          },
-          destinations: pois.map(p => {
-            let path: any[] = [];
-            try { path = findShortestPath('main_entrance', p.id); } catch { }
-            let dist = 0;
-            if (path && path.length > 0) {
-              for (let i = 0; i < path.length - 1; i++) {
-                dist += Math.sqrt(
-                  Math.pow(path[i].x - path[i + 1].x, 2) +
-                  Math.pow(path[i].y - path[i + 1].y, 2)
-                );
-              }
-            }
-            return { id: p.id, label: p.label, category: p.category, distance: Math.round(dist * 1.2) };
-          }),
-        }),
-      });
-
+      const { resolveIntent } = await import('../services/intentResolver');
+      const resolved = resolveIntent(text);
+      
       const auraMsg: DisplayMessage = {
-        id: nextId(), role: 'aura', text: data.response, timestamp: new Date(),
+        id: nextId(), 
+        role: 'aura', 
+        text: resolved.response, 
+        timestamp: new Date(),
+        action: resolved.action
       };
       setMessages(prev => [...prev, auraMsg]);
-
-      if (data.action?.type === 'route' || (data.action?.type === 'navigate' && data.action?.from && data.action?.to)) {
-        const from = data.action.from;
-        const to = data.action.to;
-        navigate(`/navigation?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`, { state: { from, to } });
-      } else if (data.action?.type === 'navigate' && data.action?.poiId) {
-        sessionStorage.setItem('autoSelectPoiId', data.action.poiId);
-        navigate('/navigation', { state: { autoSelectPoiId: data.action.poiId } });
-      } else if (data.action?.type === 'navigate') {
-        navigate('/navigation');
-      } else if (data.action?.type === 'customer_support') {
-        navigate('/chat');
-      } else if (data.action?.type === 'baggage_guidance') {
-        if (data.action?.autoCheckTag) {
-          sessionStorage.setItem('autoCheckBagTag', data.action.autoCheckTag);
-        }
-        navigate('/baggage-guidance');
-      } else if (data.action?.type === 'bus_service' || data.action?.type === 'transit_services' || data.action?.type === 'transit') {
-        navigate('/transit-services');
-      } else if (data.action?.type === 'flight_tracking') {
-        navigate('/flight-tracking');
-      } else if (data.action?.type === 'meal_delivery') {
-        navigate('/meal-delivery');
-      } else if (data.action?.type === 'emergency_contact' || data.action?.type === 'emergency') {
-        navigate('/emergency-contact');
-      } else if (data.action?.type === 'staff_dashboard') {
-        navigate('/emergency-contact/staff-dashboard');
-      } else if (data.action?.type === 'personal_guardian' || data.action?.type === 'personal_mentor') {
-        navigate('/personal-guardian');
-      } else if (data.action?.type === 'translate' || data.action?.type === 'translation') {
-        navigate('/translate');
-      } else if (data.action?.type === 'boarding_pass') {
-        navigate('/boarding-pass');
-      } else if (data.action?.type === 'profile') {
-        navigate('/profile');
-      } else if (data.action?.type === 'event_scheduler') {
-        navigate('/event-scheduler', { state: { eventName: data.action.eventName, eventTime: data.action.eventTime } });
-      }
 
       setChats(prev => [
         { ...prev.find(c => c.id === chatId)!, updatedAt: new Date().toISOString() },
@@ -500,9 +642,9 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     }
   }, [isLoading, activeChatId, passenger]); // eslint-disable-line
 
-  const startVoiceInput = useCallback(() => {
+  const startVoiceInput = useCallback(async () => {
     if (!SpeechRecognitionAPI) {
-      setVoiceError('Voice input not supported. Please use Chrome or Edge.');
+      setVoiceError('Voice input not supported on this device/browser.');
       return;
     }
     setVoiceError('');
@@ -510,13 +652,47 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
     finalTranscriptRef.current = '';
     setLiveTranscript('');
 
+    // Pre-request microphone permission via getUserMedia to ensure the WebView/Browser permission dialog triggers
+    if (navigator?.mediaDevices?.getUserMedia) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Stop audio tracks immediately once permission is verified
+        stream.getTracks().forEach(track => track.stop());
+      } catch (micErr: any) {
+        console.warn('Microphone permission check error:', micErr);
+        // If explicitly denied or blocked
+        if (micErr?.name === 'NotAllowedError' || micErr?.name === 'PermissionDeniedError') {
+          setVoiceError('Microphone permission denied. Please allow microphone access in App Settings.');
+          return;
+        }
+      }
+    }
+
     if (recognitionRef.current) {
       recognitionRef.current.abort();
       recognitionRef.current = null;
     }
 
     const recognition = new SpeechRecognitionAPI();
-    recognition.lang = 'en-US';
+    // Use targetLang for voice input locale if regional (e.g. te-IN for Telugu, hi-IN for Hindi) or default to en-US / en-IN
+    const speechLangMap: Record<string, string> = {
+      te: 'te-IN',
+      hi: 'hi-IN',
+      ta: 'ta-IN',
+      kn: 'kn-IN',
+      ml: 'ml-IN',
+      mr: 'mr-IN',
+      bn: 'bn-IN',
+      ur: 'ur-IN',
+      fr: 'fr-FR',
+      de: 'de-DE',
+      ar: 'ar-SA',
+      zh: 'zh-CN',
+      ja: 'ja-JP',
+      es: 'es-ES',
+      en: 'en-US',
+    };
+    recognition.lang = speechLangMap[targetLang] || 'en-US';
     recognition.interimResults = true;
     recognition.continuous = true;
     recognition.maxAlternatives = 1;
@@ -534,8 +710,8 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
       let msg = `Voice error: ${event.error}`;
       if (event.error === 'no-speech') msg = 'No speech detected. Please speak clearly.';
       if (event.error === 'not-allowed' || event.error === 'permission-denied')
-        msg = 'Microphone access denied. Allow it in browser settings.';
-      if (event.error === 'network') msg = 'Network error — check your connection.';
+        msg = 'Microphone access denied. Please grant Microphone permission in Android App Settings.';
+      if (event.error === 'network') msg = 'Network error — speech recognition service unavailable.';
       setVoiceError(msg);
       setIsRecording(false);
       setLiveTranscript('');
@@ -679,7 +855,11 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
                     chats.map(chat => (
                       <button
                         key={chat.id}
-                        onClick={() => { setActiveChatId(chat.id); setSidebarOpen(false); }}
+                        onClick={() => {
+                          setActiveChatId(chat.id);
+                          localStorage.setItem('aura_last_chat_id', chat.id);
+                          setSidebarOpen(false);
+                        }}
                         className={`w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all group flex items-center gap-2 ${activeChatId === chat.id
                             ? 'bg-blue-600 text-white shadow-lg'
                             : 'text-slate-300 hover:bg-white/8 hover:text-white'
@@ -739,9 +919,49 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
                       <div className="w-6 h-6 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
                     </div>
                   ) : (
-                    displayMessages.map(msg => <MsgBubble key={msg.id} msg={msg} />)
+                    displayMessages.map(msg => (
+                      <MsgBubble
+                        key={msg.id}
+                        msg={msg}
+                        ttsPlayingMsgId={ttsPlayingMsgId}
+                        onListenClick={handleListenClick}
+                        onActionClick={(action) => {
+                          // scan_board: trigger the image file input
+                          if (action.type === 'scan_board') {
+                            imageInputRef.current?.click();
+                            return;
+                          }
+
+                          // 1. Immediately close the Aura chat modal so the target page is fully visible
+                          onClose();
+                          window.dispatchEvent(new Event('aura-close-event'));
+
+                          // 2. Perform navigation to the desired feature
+                          setTimeout(() => {
+                            if (action.type === 'route' || (action.type === 'navigate' && action.from && action.to)) {
+                              navigate(`/navigation?from=${encodeURIComponent(action.from)}&to=${encodeURIComponent(action.to)}`, { state: { from: action.from, to: action.to } });
+                            } else if (action.type === 'navigate' && action.poiId) {
+                              sessionStorage.setItem('autoSelectPoiId', action.poiId);
+                              navigate('/navigation', { state: { autoSelectPoiId: action.poiId } });
+                            } else if (action.type === 'navigate') {
+                              navigate('/navigation');
+                            } else if (action.type === 'bus_service' || action.type === 'transit_services' || action.type === 'transit') {
+                              navigate('/transit-services');
+                            } else if (action.type === 'flight_tracking') {
+                              navigate('/flight-tracking');
+                            } else if (action.type === 'meal_delivery') {
+                              navigate('/meal-delivery');
+                            } else if (action.type === 'emergency_contact' || action.type === 'emergency') {
+                              navigate('/emergency-contact');
+                            } else if (action.type === 'baggage_guidance') {
+                              navigate('/baggage-guidance');
+                            }
+                          }, 50);
+                        }}
+                      />
+                    ))
                   )}
-                  {isLoading && <TypingIndicator />}
+                  {(isLoading || isOcrProcessing) && <TypingIndicator />}
                   <div ref={msgEndRef} />
                 </>
               )}
@@ -755,15 +975,16 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
                 paddingBottom: 'calc(12px + env(safe-area-inset-bottom,0px))',
               }}
             >
-              {/* Talk to AI button row */}
-              <div className="flex items-center mb-2">
+              {/* Controls row: Talk to AI + Language Selector + Upload Image */}
+              <div className="flex items-center gap-2 mb-2 flex-wrap">
+                {/* Talk to AI */}
                 <button
                   id="aura-talk-btn"
                   type="button"
                   onClick={isRecording ? stopVoiceInput : startVoiceInput}
-                  disabled={isLoading || isInitializing}
+                  disabled={isLoading || isInitializing || isOcrProcessing}
                   aria-label={isRecording ? 'Stop recording' : 'Talk to AI'}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${isRecording
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 ${isRecording
                       ? 'text-red-300 border-red-500/50 bg-red-500/15 hover:bg-red-500/25 animate-pulse'
                       : 'text-violet-300 border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/20 hover:text-white'
                     }`}
@@ -773,14 +994,57 @@ export default function AuraModal({ open, onClose }: AuraModalProps) {
                     : <><Mic size={11} /><span>Talk to AI</span></>
                   }
                 </button>
+
+                {/* Language selector */}
+                <select
+                  id="aura-lang-select"
+                  value={targetLang}
+                  onChange={e => handleLanguageChange(e.target.value)}
+                  aria-label="Translation target language"
+                  className="flex-1 min-w-0 text-xs font-semibold text-blue-200 border border-blue-500/25 rounded-xl px-2 py-1.5 outline-none transition-all cursor-pointer"
+                  style={{ background: 'rgba(37,99,235,0.12)' }}
+                >
+                  {LANG_OPTIONS.map(l => (
+                    <option key={l.code} value={l.code} style={{ background: '#1e1b4b', color: '#e2e8f0' }}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Upload / Scan image button */}
+                <button
+                  id="aura-image-upload-btn"
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                  disabled={isLoading || isInitializing || isOcrProcessing || isRecording}
+                  aria-label="Upload image for translation"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/25 hover:text-white transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                >
+                  {isOcrProcessing
+                    ? <><Loader size={11} className="animate-spin" /><span>Reading…</span></>
+                    : <><Camera size={11} /><span>Scan Board</span></>
+                  }
+                </button>
+
+                {/* Hidden file input for camera/gallery */}
+                <input
+                  ref={imageInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={handleImageChosen}
+                  className="hidden"
+                  aria-hidden="true"
+                />
+
                 {/* Live transcript preview */}
                 {isRecording && liveTranscript && (
-                  <span className="ml-2 text-[11px] text-slate-400 truncate max-w-[200px] italic">
+                  <span className="text-[11px] text-slate-400 truncate max-w-[180px] italic">
                     "{liveTranscript}"
                   </span>
                 )}
                 {isRecording && !liveTranscript && (
-                  <span className="ml-2 text-[11px] text-red-400 flex items-center gap-1">
+                  <span className="text-[11px] text-red-400 flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse inline-block" />
                     Listening…
                   </span>

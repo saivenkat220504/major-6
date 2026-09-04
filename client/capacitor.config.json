@@ -1,0 +1,6 @@
+{
+  "appId": "com.smartairport.app",
+  "appName": "Smart Airport",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}

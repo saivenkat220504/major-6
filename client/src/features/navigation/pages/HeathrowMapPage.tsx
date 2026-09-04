@@ -1318,166 +1318,108 @@ export default function HeathrowMapPage() {
           </div>
         )}
 
-        {/* ── Navigation Panel ──────────────────────────────────── */}
+        {/* ── Navigation Panel (compact bottom-sheet, single step) ─── */}
         {navMode && (
-          <div className="absolute top-0 left-0 bottom-0 w-80 z-20 flex flex-col shadow-2xl"
+          <div
+            className="absolute bottom-4 left-4 right-4 md:left-4 md:right-auto md:w-[340px] z-30 flex flex-col rounded-2xl shadow-2xl overflow-hidden"
             style={{
               background: 'rgba(10,16,32,0.97)',
               backdropFilter: 'blur(24px)',
-              borderRight: '1px solid rgba(255,255,255,0.08)',
-            }}>
-
-            {/* Header */}
-            <div className="p-4 border-b shrink-0" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
-              <div className="flex justify-between items-center mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
-                    <CheckCircle2 size={18} color="#fff" />
+              border: '1px solid rgba(255,255,255,0.08)',
+            }}
+          >
+            {/* Header row */}
+            <div className="px-4 pt-3 pb-2 border-b flex items-center justify-between" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
+                  <CheckCircle2 size={15} color="#fff" />
+                </div>
+                <div>
+                  <span className="text-white font-bold text-sm leading-none">Live Navigation</span>
+                  <div className="flex items-center gap-2 text-[10px] text-gray-400 mt-0.5">
+                    <span className="text-green-400 font-semibold">{mins} min</span>
+                    <span>·</span>
+                    <span>{Math.round(dist)}m</span>
+                    <span>·</span>
+                    <span className="text-cyan-400 font-semibold">Step {activeStep + 1} / {steps.length}</span>
                   </div>
-                  <div>
-                    <h2 className="text-white font-bold text-base leading-tight">Navigation</h2>
-                    <div className="text-[10px] text-gray-500">Step-by-step directions</div>
-                  </div>
-                </div>
-                <button onClick={stopNavigation} className="text-gray-400 hover:text-white transition-colors text-lg">✕</button>
-              </div>
-              <div className="flex gap-4 text-sm">
-                <div className="flex-1 bg-blue-600/15 rounded-lg p-2 text-center">
-                  <div className="text-green-400 font-bold text-base">{mins} min</div>
-                  <div className="text-gray-500 text-[10px]">remaining</div>
-                </div>
-                <div className="flex-1 bg-white/5 rounded-lg p-2 text-center">
-                  <div className="text-white font-bold text-base">{Math.round(dist)}m</div>
-                  <div className="text-gray-500 text-[10px]">distance</div>
-                </div>
-                <div className="flex-1 bg-white/5 rounded-lg p-2 text-center">
-                  <div className="text-cyan-400 font-bold text-base">{activeStep + 1}/{steps.length}</div>
-                  <div className="text-gray-500 text-[10px]">steps</div>
                 </div>
               </div>
+              <button onClick={stopNavigation} className="text-gray-400 hover:text-white bg-white/5 rounded-full p-1 transition-colors text-sm leading-none">✕</button>
+            </div>
 
-              {/* Notification Status Banner */}
-              {notificationStatus && (
-                <div className={`mt-2.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-center transition-all ${
-                  notificationStatus.startsWith('✓')
-                    ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
-                    : 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
-                }`}>
-                  {notificationStatus}
+            {/* Progress bar */}
+            <div className="h-1 w-full bg-white/10">
+              <div
+                className="h-1 bg-blue-500 transition-all duration-300"
+                style={{ width: `${((activeStep + 1) / Math.max(steps.length, 1)) * 100}%` }}
+              />
+            </div>
+
+            {/* Active step — the ONLY step rendered */}
+            <div className="px-4 py-3 flex items-center gap-3">
+              {currentStep ? (
+                <>
+                  <div className="w-11 h-11 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0 shadow-lg shadow-blue-500/20">
+                    <ActionIcon action={currentStep.checkpoint ? (currentStep.checkpoint.type === 'security' ? 'arrive' : 'arrive') : currentStep.action} size={20} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    {currentStep.checkpoint ? (
+                      <div>
+                        <div className="text-[10px] font-bold uppercase" style={{ color: currentStep.checkpoint.type === 'security' ? '#fca5a5' : '#fde68a' }}>
+                          {currentStep.checkpoint.type === 'security' ? '🛡️ Security Checkpoint' : '🧳 Luggage Check'}
+                        </div>
+                        <div className="text-white font-bold text-sm leading-snug mt-0.5">
+                          {currentStep.instruction}
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="text-white font-bold text-sm leading-snug">{currentStep.instruction}</div>
+                        {currentStep.distanceMeters > 0 && (
+                          <div className="text-blue-300 text-xs font-semibold mt-0.5">In {currentStep.distanceMeters} meters</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-full bg-green-600 flex items-center justify-center shrink-0">
+                    <CheckCircle2 size={20} color="#fff" />
+                  </div>
+                  <div className="text-white font-bold text-sm">You have arrived!</div>
                 </div>
               )}
             </div>
 
-            {/* Current step hero */}
-            {currentStep && (
-              <div className="mx-3 mt-3 p-3 rounded-xl border border-blue-500/30"
-                style={{ background: 'rgba(41,121,255,0.12)' }}>
-                <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white shrink-0">
-                    <ActionIcon action={currentStep.action} size={20} />
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-white font-semibold text-sm">{currentStep.instruction}</div>
-                    {currentStep.distanceMeters > 0 && (
-                      <div className="text-blue-300 text-xs mt-1">{currentStep.distanceMeters}m</div>
-                    )}
-                  </div>
-                </div>
+            {/* Notification status */}
+            {notificationStatus && (
+              <div className={`mx-3 mb-2 px-3 py-1.5 rounded-lg text-xs font-semibold text-center ${
+                notificationStatus.startsWith('✓')
+                  ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-300'
+                  : 'bg-amber-500/15 border border-amber-500/30 text-amber-300'
+              }`}>
+                {notificationStatus}
               </div>
             )}
 
-            {/* All steps list */}
-            <div className="flex-1 overflow-y-auto py-2 px-2" style={{ scrollbarWidth: 'none' }}>
-              {steps.map((step, idx) => {
-                const isActive = idx === activeStep;
-                const isPast   = idx < activeStep;
-                const cp = step.checkpoint;
-
-                /* ── Checkpoint Step Card ── */
-                if (cp) {
-                  const isSecurity = cp.type === 'security';
-                  const bgActive   = isSecurity ? 'rgba(239,68,68,0.18)' : 'rgba(234,179,8,0.15)';
-                  const bgNormal   = isSecurity ? 'rgba(239,68,68,0.07)' : 'rgba(234,179,8,0.06)';
-                  const borderClr  = isSecurity ? 'rgba(239,68,68,0.45)' : 'rgba(234,179,8,0.4)';
-                  const textClr    = isSecurity ? '#fca5a5' : '#fde68a';
-                  const iconBg     = isSecurity ? '#7f1d1d' : '#713f12';
-                  return (
-                    <button key={idx}
-                      onClick={() => gotoStep(idx)}
-                      className="w-full text-left mb-2 rounded-xl transition-all"
-                      style={{
-                        background: isActive ? bgActive : isPast ? 'rgba(255,255,255,0.02)' : bgNormal,
-                        border: `1.5px solid ${isActive ? cp.color : isPast ? 'rgba(255,255,255,0.05)' : borderClr}`,
-                        opacity: isPast ? 0.45 : 1,
-                      }}
-                    >
-                      <div className="flex items-center gap-3 px-3 py-2.5">
-                        <div className="w-8 h-8 rounded-full flex items-center justify-center text-base shrink-0"
-                          style={{ background: iconBg, border: `1.5px solid ${cp.color}` }}>
-                          {isSecurity ? '🛡️' : '🧳'}
-                        </div>
-                        <div className="flex-1">
-                          <div className="text-[11px] font-bold" style={{ color: textClr }}>
-                            {isSecurity ? 'Pass through' : 'Proceed through'} {cp.name}
-                          </div>
-                          <div className="text-[9px] mt-0.5" style={{ color: isSecurity ? '#ef4444' : '#eab308', opacity: 0.7 }}>
-                            {isSecurity ? '🔴 Security Checkpoint' : '🟡 Luggage Check Zone'}
-                          </div>
-                        </div>
-                        {isActive && (
-                          <div className="text-[9px] font-bold px-1.5 py-0.5 rounded-full"
-                            style={{ background: cp.color, color: isSecurity ? '#1a0000' : '#1a1000' }}>
-                            NOW
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                }
-
-                /* ── Regular Step Card ── */
-                return (
-                  <button key={idx}
-                    onClick={() => gotoStep(idx)}
-                    className={`w-full flex items-start gap-3 p-3 rounded-xl transition-all mb-1 text-left ${
-                      isActive ? 'bg-blue-600/20 border border-blue-500/30' :
-                      isPast   ? 'opacity-35' : 'hover:bg-white/5'
-                    }`}>
-                    <div className={`mt-0.5 flex items-center justify-center w-7 h-7 rounded-full shrink-0 ${
-                      isActive ? 'bg-blue-600 text-white' : isPast ? 'bg-gray-700 text-gray-500' : 'bg-gray-800 text-gray-400'
-                    }`}>
-                      <ActionIcon action={step.action} size={14} />
-                    </div>
-                    <div className="flex-1">
-                      <div className={`text-xs font-medium ${isActive ? 'text-white' : 'text-gray-400'}`}>
-                        {step.instruction}
-                      </div>
-                      {step.distanceMeters > 0 && (
-                        <div className="text-[10px] text-gray-600 mt-0.5">{step.distanceMeters}m</div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
             {/* Controls footer */}
-            <div className="p-3 border-t shrink-0" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={handlePrevStep}
-                  disabled={activeStep === 0}
-                  className="bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white rounded-xl py-3 text-sm font-semibold transition-colors flex items-center justify-center gap-2">
-                  ← Prev
-                </button>
-                <button onClick={handleNextStep}
-                  disabled={activeStep === steps.length - 1}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-30 text-white rounded-xl py-3 text-sm font-semibold transition-colors flex items-center justify-center gap-2">
-                  Next →
-                </button>
-              </div>
-              <div className="mt-2 text-center text-[10px] text-gray-600">
-                Click any step above or use Prev/Next to navigate
-              </div>
+            <div className="px-3 pb-3 border-t pt-2 flex gap-2" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+              <button
+                onClick={handlePrevStep}
+                disabled={activeStep === 0}
+                className="flex-1 bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl py-2.5 text-xs font-semibold transition-colors"
+              >
+                ← Prev
+              </button>
+              <button
+                onClick={handleNextStep}
+                disabled={activeStep === steps.length - 1}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl py-2.5 text-xs font-semibold transition-colors shadow-lg shadow-blue-500/20"
+              >
+                Next →
+              </button>
             </div>
           </div>
         )}

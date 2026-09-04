@@ -118,19 +118,18 @@ export interface InvestigatePayload {
 export async function investigateAirportMetro(
   payload: InvestigatePayload
 ): Promise<MetroInvestigationResult> {
-  const response = await fetch(`${API_BASE}/investigate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
+  // Simulate network delay for realistic feel
+  await new Promise(resolve => setTimeout(resolve, 800));
+  
+  try {
+    const { resolveMetro } = await import('./transitResolver');
+    return resolveMetro(payload.airportCode, payload.airportName, payload.city);
+  } catch (err: any) {
     return {
       success: false,
-      error: data.error || `Server error (${response.status}). Please try again later.`,
+      error: 'Failed to resolve metro information locally.',
+      airportName: payload.airportName,
+      airportCode: payload.airportCode,
     };
   }
-
-  return response.json();
 }

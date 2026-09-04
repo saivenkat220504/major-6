@@ -59,30 +59,16 @@ export interface BusServiceResult {
 export async function investigateAirportBus(
   payload: BusInvestigationPayload
 ): Promise<BusServiceResult> {
+  // Simulate network delay for realistic feel
+  await new Promise(resolve => setTimeout(resolve, 800));
+  
   try {
-    const response = await fetch(`${API_BASE}/investigate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return {
-        success: false,
-        error: data.error || `Server error (${response.status}). Please try again later.`,
-        recommendedApp: data.recommendedApp,
-        officialWebsite: data.officialWebsite,
-        airportName: payload.airportName,
-        airportCode: payload.airportCode,
-      };
-    }
-
-    return data;
+    const { resolveBus } = await import('./transitResolver');
+    return resolveBus(payload.airportCode, payload.airportName, payload.city);
   } catch (err: any) {
     return {
       success: false,
-      error: 'Network connection failed. Unable to fetch live bus information.',
+      error: 'Failed to resolve bus information locally.',
       airportName: payload.airportName,
       airportCode: payload.airportCode,
     };

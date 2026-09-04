@@ -15,6 +15,7 @@ import airportBusRoutes from './routes/airportBus';
 import guardianRoutes from './routes/guardian';
 import flightInfoRoutes from './routes/flightInfo';
 import barcodeRoutes from './routes/barcode';
+import transitConnectivityRoutes from './routes/transitConnectivity';
 import https from 'https';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -40,6 +41,7 @@ app.use('/api/airport-bus', airportBusRoutes);
 app.use('/api/guardian', guardianRoutes);
 app.use('/api/flight-info', flightInfoRoutes);
 app.use('/api/decode-barcode', barcodeRoutes);
+app.use('/api/transit-connectivity', transitConnectivityRoutes);
 
 app.get('/api/tts', (req, res) => {
   const { text, lang } = req.query;
