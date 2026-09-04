@@ -5,6 +5,13 @@ import fs from 'fs';
 
 let firebaseApp: App | null = null;
 
+function maskToken(token: string): string {
+  if (!token || token.length <= 10) return '***';
+  return `${token.substring(0, 6)}...${token.substring(token.length - 4)}`;
+}
+
+let credentialsConfiguredButInvalid = false;
+
 /**
  * Helper to safely parse and validate a Firebase Admin Service Account JSON string.
  * Handles unescaping of newlines in private_key, base64 encoding, surrounding quotes,
@@ -34,41 +41,41 @@ function parseAndValidateServiceAccount(raw: string): any | null {
 
     const obj = JSON.parse(text);
 
-    // Check if client-side google-services.json was provided by mistake
+    // Detect and reject client-side google-services.json format
     if (obj.project_info && !obj.private_key) {
       console.error(
-        '[PushNotificationService] ⚠️ Detected client "google-services.json" format instead of Firebase Admin Service Account Private Key.'
+        '[PushNotificationService] ❌ Detected client "google-services.json" format in FIREBASE_SERVICE_ACCOUNT_KEY instead of Firebase Admin Service Account Private Key.'
       );
       console.error(
-        '[PushNotificationService] ℹ️ Requirement: In Firebase Console -> Project Settings -> Service Accounts -> "Generate new private key". Paste that service-account JSON into FIREBASE_SERVICE_ACCOUNT_KEY on Render.'
+        '[PushNotificationService] ℹ️ Fix required: In Firebase Console -> Project Settings -> Service Accounts -> click "Generate new private key", and paste that JSON into FIREBASE_SERVICE_ACCOUNT_KEY on Render.'
       );
       return null;
     }
 
-    // Fix escaped newlines in private_key if present
+    // Convert escaped newlines in private_key into actual newlines
     if (typeof obj.private_key === 'string' && obj.private_key.includes('\\n')) {
       obj.private_key = obj.private_key.replace(/\\n/g, '\n');
     }
 
     // Validate required fields for Firebase Admin SDK cert()
     if (!obj.project_id || typeof obj.project_id !== 'string') {
-      console.error('[PushNotificationService] Service account validation failed: missing string "project_id".');
+      console.error('[PushNotificationService] ❌ Service account validation failed: missing string "project_id".');
       return null;
     }
 
     if (!obj.client_email || typeof obj.client_email !== 'string') {
-      console.error('[PushNotificationService] Service account validation failed: missing string "client_email".');
+      console.error('[PushNotificationService] ❌ Service account validation failed: missing string "client_email".');
       return null;
     }
 
     if (!obj.private_key || typeof obj.private_key !== 'string') {
-      console.error('[PushNotificationService] Service account validation failed: missing string "private_key".');
+      console.error('[PushNotificationService] ❌ Service account validation failed: missing string "private_key".');
       return null;
     }
 
     return obj;
   } catch (err: any) {
-    console.error('[PushNotificationService] JSON parse error on FIREBASE_SERVICE_ACCOUNT_KEY:', err.message);
+    console.error('[PushNotificationService] ❌ JSON parse error on FIREBASE_SERVICE_ACCOUNT_KEY:', err.message);
     return null;
   }
 }
@@ -92,14 +99,19 @@ export function initFirebaseAdmin(): boolean {
 
     // 1. Check environment variable FIREBASE_SERVICE_ACCOUNT_KEY
     const jsonEnv = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    if (jsonEnv) {
+    if (jsonEnv && jsonEnv.trim().length > 0) {
       const serviceAccount = parseAndValidateServiceAccount(jsonEnv);
       if (serviceAccount) {
         firebaseApp = initializeApp({
           credential: cert(serviceAccount),
         });
+        credentialsConfiguredButInvalid = false;
         console.log(`[PushNotificationService] ✅ Firebase Admin initialized successfully for project: ${serviceAccount.project_id}`);
         return true;
+      } else {
+        credentialsConfiguredButInvalid = true;
+        console.error('[PushNotificationService] ❌ CRITICAL: FIREBASE_SERVICE_ACCOUNT_KEY environment variable is present but invalid. Push notifications will NOT fall back silently to mock mode.');
+        return false;
       }
     }
 
@@ -112,6 +124,7 @@ export function initFirebaseAdmin(): boolean {
         firebaseApp = initializeApp({
           credential: cert(serviceAccount),
         });
+        credentialsConfiguredButInvalid = false;
         console.log(`[PushNotificationService] ✅ Firebase Admin initialized from credentials file (${serviceAccount.project_id})`);
         return true;
       }
@@ -126,12 +139,13 @@ export function initFirebaseAdmin(): boolean {
         firebaseApp = initializeApp({
           credential: cert(serviceAccount),
         });
+        credentialsConfiguredButInvalid = false;
         console.log(`[PushNotificationService] ✅ Firebase Admin initialized from local firebase-service-account.json (${serviceAccount.project_id})`);
         return true;
       }
     }
 
-    console.warn('[PushNotificationService] ⚠️ No valid Firebase Admin credentials found. Server operating in mock notification mode.');
+    console.warn('[PushNotificationService] ⚠️ No Firebase Admin credentials configured. Server operating in mock notification mode (local dev only).');
     return false;
   } catch (err: any) {
     console.error('[PushNotificationService] Failed to initialize Firebase Admin:', err.message);
@@ -148,7 +162,7 @@ export interface PushNotificationPayload {
 /**
  * Dispatch push notifications to a list of device tokens.
  * Uses high priority for Android to ensure delivery when screen is locked or app is closed.
- * Falls back gracefully to mock logging if Firebase is not yet configured with real credentials.
+ * Never logs complete tokens or private keys.
  */
 export async function sendPushNotification(
   tokens: string[],
@@ -161,10 +175,16 @@ export async function sendPushNotification(
 
   const isReady = initFirebaseAdmin();
 
+  if (credentialsConfiguredButInvalid) {
+    console.error(`[PushNotificationService] ❌ Failed to dispatch push notification: FIREBASE_SERVICE_ACCOUNT_KEY is configured on server but has invalid format. (${tokens.length} recipients blocked)`);
+    return { successCount: 0, failureCount: tokens.length, mocked: false };
+  }
+
   if (!isReady || !firebaseApp) {
+    const masked = tokens.map(maskToken);
     console.log('---------------------------------------------------------');
     console.log('[PushNotificationService] 🔔 [MOCK PUSH NOTIFICATION DISPATCHED]');
-    console.log(`Target Devices (${tokens.length}):`, tokens);
+    console.log(`Target Devices (${tokens.length}):`, masked);
     console.log(`Title: ${payload.title}`);
     console.log(`Body:\n${payload.body}`);
     console.log('Payload Data:', payload.data);
