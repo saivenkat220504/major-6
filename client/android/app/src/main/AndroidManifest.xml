@@ -43,4 +43,13 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- Push Notification permissions -->
+    <!-- POST_NOTIFICATIONS is required on Android 13 (API 33+) for notifications to appear -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- VIBRATE allows the device to vibrate for notification alerts -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- WAKE_LOCK allows heads-up banners to wake the device screen -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
 </manifest>

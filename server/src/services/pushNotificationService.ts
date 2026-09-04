@@ -93,9 +93,14 @@ export async function sendPushNotification(
       data: payload.data || {},
       android: {
         priority: 'high',
+        ttl: 86400,          // 24h TTL so device receives even after brief offline period
+        collapseKey: payload.data?.flightNumber ?? 'flight_update',
         notification: {
           sound: 'default',
-          channelId: 'flight_updates',
+          channelId: 'flight_alerts_v2',   // Must match the channel created in the app
+          notificationPriority: 'PRIORITY_MAX',  // Forces heads-up banner
+          defaultVibrateTimings: true,           // Use device default vibration
+          defaultSound: true,
           clickAction: 'FLIGHT_TRACKING_NOTIFICATION_CLICK',
         },
       },

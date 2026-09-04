@@ -30,13 +30,16 @@ export async function initializePushNotifications(flightNumber = 'AI-102'): Prom
       return null;
     }
 
-    // 2. Create notification channel for Android (Oreo and newer)
+    // 2. Create notification channel for Android (Oreo+).
+    //    Use channel ID 'flight_alerts_v2' — Android ignores importance UPGRADES
+    //    on existing channels, so a new ID forces creation of a fresh
+    //    IMPORTANCE_HIGH channel with sound + vibration + heads-up banners.
     await PushNotifications.createChannel({
-      id: 'flight_updates',
-      name: 'Flight Updates',
-      description: 'Alerts when your flight terminal or gate changes',
-      importance: 5, // High importance (makes sound and displays as heads-up notification)
-      visibility: 1, // Visible on locked screen
+      id: 'flight_alerts_v2',
+      name: 'Flight Alerts',
+      description: 'Real-time gate and terminal change alerts for your flight',
+      importance: 5, // IMPORTANCE_HIGH — shows heads-up, plays sound, vibrates
+      visibility: 1, // VISIBILITY_PUBLIC — shows on lock screen
       sound: 'default',
       vibration: true,
     });
