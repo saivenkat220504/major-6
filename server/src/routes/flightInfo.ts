@@ -15,7 +15,7 @@ router.post('/', updateFlightInfo);
  * POST /api/flight-info/register-device
  * Registers an Android push notification token mapped to a flight number
  */
-router.post('/register-device', (req: Request, res: Response) => {
+router.post('/register-device', async (req: Request, res: Response) => {
   try {
     const { token, flightNumber, platform } = req.body;
     if (!token || !flightNumber) {
@@ -25,7 +25,7 @@ router.post('/register-device', (req: Request, res: Response) => {
       });
     }
 
-    const subscription = registerDeviceToken(token, flightNumber, platform || 'android');
+    const subscription = await registerDeviceToken(token, flightNumber, platform || 'android');
     return res.json({
       success: true,
       message: 'Device push token registered successfully',
@@ -45,9 +45,9 @@ router.post('/register-device', (req: Request, res: Response) => {
  * GET /api/flight-info/registered-devices
  * Returns list of registered devices (for local debugging/inspection)
  */
-router.get('/registered-devices', (_req: Request, res: Response) => {
+router.get('/registered-devices', async (_req: Request, res: Response) => {
   try {
-    const devices = getDeviceSubscriptions();
+    const devices = await getDeviceSubscriptions();
     return res.json({
       success: true,
       count: devices.length,

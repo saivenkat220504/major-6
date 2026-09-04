@@ -146,5 +146,16 @@ model FlightInfo {
   @@map("flight_info")
 }
 
+// ── Push Notification Device Subscriptions ────────────────────────────────────
 
+model DeviceSubscription {
+  id           String   @id @default(uuid())
+  deviceToken  String   @map("device_token")
+  flightNumber String   @map("flight_number")
+  platform     String   @default("android")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
+  @@unique([flightNumber, deviceToken])
+  @@map("device_subscriptions")
+}

@@ -127,7 +127,7 @@ export async function checkFlightChanges(): Promise<{ changesDetected: number; n
         );
 
         // Retrieve target tokens registered for this flight
-        const tokens = getTokensForFlight(flightNum);
+        const tokens = await getTokensForFlight(flightNum);
 
         // Dispatch push notification
         if (tokens.length > 0) {
