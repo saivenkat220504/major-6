@@ -153,6 +153,8 @@ export function initFirebaseAdmin(): boolean {
   }
 }
 
+import { deleteInvalidTokens } from './notificationStorage';
+
 export interface PushNotificationPayload {
   title: string;
   body: string;
@@ -160,9 +162,10 @@ export interface PushNotificationPayload {
 }
 
 /**
- * Dispatch push notifications to a list of device tokens.
+ * Dispatch real FCM push notifications to a list of device tokens.
  * Uses high priority for Android to ensure delivery when screen is locked or app is closed.
  * Never logs complete tokens or private keys.
+ * Automatically deletes unregistered / invalid tokens reported by Firebase.
  */
 export async function sendPushNotification(
   tokens: string[],
@@ -176,20 +179,17 @@ export async function sendPushNotification(
   const isReady = initFirebaseAdmin();
 
   if (credentialsConfiguredButInvalid) {
-    console.error(`[PushNotificationService] ❌ Failed to dispatch push notification: FIREBASE_SERVICE_ACCOUNT_KEY is configured on server but has invalid format. (${tokens.length} recipients blocked)`);
+    console.error(
+      `[PushNotificationService] ❌ Failed to dispatch push notification: FIREBASE_SERVICE_ACCOUNT_KEY is configured on server but has invalid format. (${tokens.length} recipients blocked)`,
+    );
     return { successCount: 0, failureCount: tokens.length, mocked: false };
   }
 
   if (!isReady || !firebaseApp) {
-    const masked = tokens.map(maskToken);
-    console.log('---------------------------------------------------------');
-    console.log('[PushNotificationService] 🔔 [MOCK PUSH NOTIFICATION DISPATCHED]');
-    console.log(`Target Devices (${tokens.length}):`, masked);
-    console.log(`Title: ${payload.title}`);
-    console.log(`Body:\n${payload.body}`);
-    console.log('Payload Data:', payload.data);
-    console.log('---------------------------------------------------------');
-    return { successCount: tokens.length, failureCount: 0, mocked: true };
+    console.error(
+      `[PushNotificationService] ❌ Firebase Admin is not initialized. Cannot dispatch push notifications to ${tokens.length} recipient(s). Production requires real FCM credentials.`,
+    );
+    return { successCount: 0, failureCount: tokens.length, mocked: false };
   }
 
   try {
@@ -202,14 +202,14 @@ export async function sendPushNotification(
       data: payload.data || {},
       android: {
         priority: 'high',
-        ttl: 86400,          // 24h TTL so device receives even after brief offline period
+        ttl: 86400, // 24h TTL so device receives even after brief offline period
         collapseKey: payload.data?.flightNumber ?? 'flight_update',
         notification: {
           sound: 'default',
-          channelId: 'flight_alerts_v2',   // Must match the channel created in the app
-          priority: 'max',                 // Supported in firebase-admin: 'min' | 'low' | 'default' | 'high' | 'max'
-          visibility: 'public',            // Supported in firebase-admin: 'private' | 'public' | 'secret'
-          defaultVibrateTimings: true,     // Use device default vibration
+          channelId: 'flight_alerts_v2', // High importance channel created in the client app
+          priority: 'max',
+          visibility: 'public',
+          defaultVibrateTimings: true,
           defaultSound: true,
           clickAction: 'FLIGHT_TRACKING_NOTIFICATION_CLICK',
         },
@@ -218,15 +218,47 @@ export async function sendPushNotification(
 
     const messaging = getMessaging(firebaseApp);
     const response = await messaging.sendEachForMulticast(message);
-    console.log(`[PushNotificationService] FCM batch sent: ${response.successCount} success, ${response.failureCount} failed`);
+    console.log(
+      `[PushNotificationService] FCM batch sent: ${response.successCount} success, ${response.failureCount} failed (total targets: ${tokens.length})`,
+    );
+
+    // Inspect individual token outcomes and clean up dead tokens
+    if (response.failureCount > 0) {
+      const invalidTokensToDelete: string[] = [];
+
+      response.responses.forEach((resp, idx) => {
+        if (!resp.success) {
+          const errorCode = resp.error?.code || 'unknown_code';
+          const errorMessage = resp.error?.message || 'Unknown failure';
+          console.warn(
+            `[PushNotificationService] ⚠️ FCM delivery failed for token [${maskToken(tokens[idx])}]: safe_code="${errorCode}", reason="${errorMessage}"`,
+          );
+
+          if (
+            errorCode === 'messaging/registration-token-not-registered' ||
+            errorCode === 'messaging/invalid-registration-token' ||
+            errorCode === 'messaging/invalid-argument'
+          ) {
+            invalidTokensToDelete.push(tokens[idx]);
+          }
+        }
+      });
+
+      if (invalidTokensToDelete.length > 0) {
+        console.log(
+          `[PushNotificationService] Purging ${invalidTokensToDelete.length} obsolete/invalid FCM token(s) from PostgreSQL...`,
+        );
+        await deleteInvalidTokens(invalidTokensToDelete);
+      }
+    }
 
     return {
       successCount: response.successCount,
       failureCount: response.failureCount,
       mocked: false,
     };
-  } catch (err) {
-    console.error('[PushNotificationService] Error dispatching multicast message:', err);
+  } catch (err: any) {
+    console.error('[PushNotificationService] Error dispatching multicast message:', err.message || err);
     return {
       successCount: 0,
       failureCount: tokens.length,
@@ -234,3 +266,4 @@ export async function sendPushNotification(
     };
   }
 }
+

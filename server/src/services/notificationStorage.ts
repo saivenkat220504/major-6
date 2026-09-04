@@ -1,25 +1,20 @@
 /**
  * notificationStorage.ts
  *
- * CRITICAL FIX (reliability):
- *   All device registrations are stored permanently in PostgreSQL via Prisma.
- *   The flight-watcher baseline (terminal/gate last seen) is also stored in
- *   PostgreSQL so it survives Render restarts and redeployments.
- *
- *   Root causes fixed:
- *   1. Previously used local JSON files → gone on every Render deploy.
- *   2. Watcher baseline was in-memory only → first check after restart would
- *      record the current state AS the new baseline, silently swallowing any
- *      gate change that happened while the server was down.
- *   3. Used a local `new PrismaClient()` instead of the shared singleton,
- *      risking connection-pool exhaustion under load.
+ * CRITICAL RELIABILITY:
+ *   - All device registrations are stored permanently in PostgreSQL via Prisma.
+ *   - Unique constraint @@unique([flightNumber, deviceToken]) enforces no duplicates.
+ *   - Prisma upsert updates existing records without duplication.
+ *   - Bidirectional flight number matching handles "AI-102", "AI102", and "ai-102".
+ *   - Automatic token deletion for tokens marked invalid/unregistered by Firebase.
+ *   - The flight-watcher baseline (terminal/gate) is stored in PostgreSQL (FlightStateSnapshot)
+ *     so it survives Render restarts and redeployments.
  */
 
 import prisma from '../prisma/client';
 
 // ─── Type Exports ─────────────────────────────────────────────────────────────
 
-/** Lightweight view of a registered device subscription. */
 export interface DeviceSubscription {
   token: string;
   flightNumber: string;
@@ -27,13 +22,51 @@ export interface DeviceSubscription {
   updatedAt: string;
 }
 
-/** Persisted notification baseline per flight. */
 export interface FlightStateSnapshot {
   flightNumber: string;
   terminal: string;
   gate: string;
   recordedAt: string;
 }
+
+// ─── Flight Number Canonicalization & Variants ────────────────────────────────
+
+/**
+ * Standardize flight numbers into canonical format.
+ * e.g., "ai 102" -> "AI-102", "AI102" -> "AI-102", "6E2412" -> "6E-2412"
+ */
+export function toCanonicalFlightNumber(flightNumber: string): string {
+  if (!flightNumber) return '';
+  const clean = flightNumber.trim().toUpperCase();
+  const match = clean.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
+  if (match) {
+    return `${match[1]}-${match[2]}`;
+  }
+  return clean;
+}
+
+/**
+ * Generate all plausible query variants for a flight number to guarantee matching
+ * between registration and database queries (e.g. "AI-102", "AI102", "AI 102").
+ */
+export function getFlightNumberVariants(flightNumber: string): string[] {
+  if (!flightNumber) return [];
+  const clean = flightNumber.trim().toUpperCase();
+  const set = new Set<string>();
+  set.add(clean);
+
+  const match = clean.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
+  if (match) {
+    const code = match[1];
+    const num = match[2];
+    set.add(`${code}-${num}`);
+    set.add(`${code}${num}`);
+    set.add(`${code} ${num}`);
+  }
+
+  return Array.from(set);
+}
+
 
 // ─── Device registration (PostgreSQL) ────────────────────────────────────────
 
@@ -46,21 +79,21 @@ export async function registerDeviceToken(
   flightNumber: string,
   platform = 'android',
 ): Promise<DeviceSubscription> {
-  const normalizedFlight = flightNumber.trim().toUpperCase();
+  const canonicalFlight = toCanonicalFlightNumber(flightNumber);
 
   const record = await prisma.deviceSubscription.upsert({
     where: {
       flightNumber_deviceToken: {
-        flightNumber: normalizedFlight,
+        flightNumber: canonicalFlight,
         deviceToken: token,
       },
     },
     update: { platform },
-    create: { deviceToken: token, flightNumber: normalizedFlight, platform },
+    create: { deviceToken: token, flightNumber: canonicalFlight, platform },
   });
 
   console.log(
-    `[NotificationStorage] Upserted device for flight ${normalizedFlight} (token: ${maskToken(token)})`,
+    `[NotificationStorage] ✅ Upserted device for flight ${canonicalFlight} (token: ${maskToken(token)}) in PostgreSQL`,
   );
 
   return {
@@ -72,23 +105,23 @@ export async function registerDeviceToken(
 }
 
 /**
- * Return the distinct device tokens registered for a specific flight.
- * Queries PostgreSQL on every call – never uses in-memory state.
+ * Return distinct device tokens registered for a flight number.
+ * Queries PostgreSQL across all plausible flight-number variants.
  */
 export async function getTokensForFlight(flightNumber: string): Promise<string[]> {
-  const normalizedFlight = flightNumber.trim().toUpperCase();
+  const variants = getFlightNumberVariants(flightNumber);
 
   const records = await prisma.deviceSubscription.findMany({
-    where: { flightNumber: normalizedFlight },
-    select: { deviceToken: true },
+    where: {
+      flightNumber: { in: variants },
+    },
+    select: { deviceToken: true, flightNumber: true },
   });
 
   console.log(
-    `[NotificationStorage] Found ${records.length} registered device(s) in DB for flight ${normalizedFlight}`,
+    `[NotificationStorage] PostgreSQL lookup for flight "${flightNumber}" (variants: [${variants.join(', ')}]) returned ${records.length} record(s)`,
   );
 
-  // Deduplicate token strings (DB unique constraint should prevent duplicates,
-  // but we deduplicate here as defence-in-depth)
   const seen = new Set<string>();
   const tokens: string[] = [];
   for (const r of records) {
@@ -98,6 +131,26 @@ export async function getTokensForFlight(flightNumber: string): Promise<string[]
     }
   }
   return tokens;
+}
+
+/**
+ * Permanently delete invalid / unregistered tokens from PostgreSQL.
+ * Called when Firebase returns registration-token-not-registered or invalid-registration-token.
+ */
+export async function deleteInvalidTokens(tokens: string[]): Promise<number> {
+  if (!tokens || tokens.length === 0) return 0;
+  try {
+    const res = await prisma.deviceSubscription.deleteMany({
+      where: { deviceToken: { in: tokens } },
+    });
+    console.log(
+      `[NotificationStorage] 🗑️ Cleaned up ${res.count} unregistered/invalid FCM token(s) from PostgreSQL.`,
+    );
+    return res.count;
+  } catch (err: any) {
+    console.error('[NotificationStorage] Failed to delete invalid tokens:', err.message);
+    return 0;
+  }
 }
 
 /** Return all registered device subscriptions (admin/diagnostic use). */
@@ -118,13 +171,14 @@ export async function getDeviceSubscriptions(): Promise<DeviceSubscription[]> {
 
 /**
  * Load the persisted baseline for a flight from PostgreSQL.
- * Returns null if no baseline has been recorded yet (new flight).
+ * Returns null if no baseline has been recorded yet.
  */
 export async function getFlightStateSnapshot(
   flightNumber: string,
 ): Promise<FlightStateSnapshot | null> {
-  const record = await prisma.flightStateSnapshot.findUnique({
-    where: { flightNumber },
+  const variants = getFlightNumberVariants(flightNumber);
+  const record = await prisma.flightStateSnapshot.findFirst({
+    where: { flightNumber: { in: variants } },
   });
   if (!record) return null;
   return {
@@ -137,24 +191,24 @@ export async function getFlightStateSnapshot(
 
 /**
  * Persist (upsert) the last-known terminal+gate for a flight.
- * Called by the watcher after successfully dispatching a notification,
- * and also when initialising a new flight baseline.
  */
 export async function saveFlightStateSnapshot(
   flightNumber: string,
   terminal: string,
   gate: string,
 ): Promise<void> {
+  const canonicalFlight = toCanonicalFlightNumber(flightNumber);
   await prisma.flightStateSnapshot.upsert({
-    where: { flightNumber },
+    where: { flightNumber: canonicalFlight },
     update: { terminal, gate },
-    create: { flightNumber, terminal, gate },
+    create: { flightNumber: canonicalFlight, terminal, gate },
   });
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function maskToken(token: string): string {
+export function maskToken(token: string): string {
   if (!token || token.length <= 10) return '***';
   return `${token.substring(0, 6)}...${token.substring(token.length - 4)}`;
 }
+

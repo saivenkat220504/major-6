@@ -19,7 +19,8 @@ import {
 import { sendPushNotification } from './pushNotificationService';
 
 let isWatcherRunning = false;
-let watcherIntervalTimer: NodeJS.Timeout | null = null;
+let watcherTimeoutHandle: NodeJS.Timeout | null = null;
+let isCheckInProgress = false;
 
 /**
  * Format a human-readable notification body based on which fields changed.
@@ -54,16 +55,20 @@ export function buildNotificationContent(
 
 /**
  * Single iteration: read all flight_info rows, compare each against the
- * persisted FlightStateSnapshot baseline, dispatch FCM notifications for
- * any changed flights, then update the baseline in the database.
+ * persisted FlightStateSnapshot baseline in PostgreSQL, dispatch real FCM notifications
+ * for any changed flights, then update the baseline in PostgreSQL.
  *
- * This function is safe to call across server restarts because all state
- * it depends on is stored in PostgreSQL.
+ * Concurrency protected: only one check iteration executes at any given time.
  */
 export async function checkFlightChanges(): Promise<{
   changesDetected: number;
   notificationsSent: number;
 }> {
+  if (isCheckInProgress) {
+    return { changesDetected: 0, notificationsSent: 0 };
+  }
+
+  isCheckInProgress = true;
   let changesDetected = 0;
   let notificationsSent = 0;
 
@@ -71,9 +76,8 @@ export async function checkFlightChanges(): Promise<{
     // 1. Fetch current flight records from the database
     let records: any[] = [];
     try {
-      records = await (prisma as any).flightInfo?.findMany() ?? [];
+      records = (await (prisma as any).flightInfo?.findMany()) ?? [];
     } catch {
-      // Fallback: raw SQL (defensive – model name mismatch edge case)
       try {
         const raw: any = await prisma.$queryRawUnsafe(
           `SELECT * FROM "flight_info" ORDER BY "updated_at" DESC`,
@@ -101,15 +105,14 @@ export async function checkFlightChanges(): Promise<{
 
       if (!currentTerminal && !currentGate) continue;
 
-      // 2. Load the persisted baseline from PostgreSQL
+      // 2. Load persisted baseline from PostgreSQL
       const snapshot = await getFlightStateSnapshot(flightNum);
 
       if (!snapshot) {
-        // No baseline yet — record current state as the starting point.
-        // Do NOT send a notification; we have no previous value to compare.
+        // No baseline yet — record current state as starting baseline in PostgreSQL.
         await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
         console.log(
-          `[FlightWatcher] Initialised baseline for ${flightNum}: terminal=${currentTerminal}, gate=${currentGate}`,
+          `[FlightWatcher] Initialised baseline for ${flightNum}: terminal="${currentTerminal}", gate="${currentGate}"`,
         );
         continue;
       }
@@ -118,14 +121,17 @@ export async function checkFlightChanges(): Promise<{
       const gateChanged = snapshot.gate !== currentGate;
 
       if (!terminalChanged && !gateChanged) {
-        // No change — nothing to do.
+        // No change — nothing to dispatch.
         continue;
       }
 
       changesDetected++;
-      console.log(`[FlightWatcher] ✈ Change detected for flight ${flightNum}:`);
+      console.log(`[FlightWatcher] ✈ Flight update detected for flight ${flightNum}:`);
       console.log(`  Terminal: "${snapshot.terminal}" → "${currentTerminal}"`);
       console.log(`  Gate:     "${snapshot.gate}" → "${currentGate}"`);
+
+      // Update baseline immediately to prevent re-triggering while dispatching
+      await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
 
       // 3. Build notification payload
       const payload = buildNotificationContent(
@@ -138,10 +144,9 @@ export async function checkFlightChanges(): Promise<{
       const tokens = await getTokensForFlight(flightNum);
 
       if (tokens.length === 0) {
-        // No registered devices — skip silently. Do NOT use mock tokens.
-        console.warn(
-          `[FlightWatcher] ⚠ No registered devices found in DB for flight ${flightNum}. ` +
-            `Notification skipped. (The device must call /register-device first.)`,
+        // Strictly report real database count; NEVER mock or fake tokens
+        console.log(
+          `[FlightWatcher] 0 registered device(s) found in PostgreSQL for flight ${flightNum}. Real push dispatch skipped.`,
         );
       } else {
         // 5. Dispatch real FCM push notification
@@ -156,52 +161,59 @@ export async function checkFlightChanges(): Promise<{
         });
         notificationsSent += result.successCount;
         console.log(
-          `[FlightWatcher] FCM dispatched to ${tokens.length} device(s): ` +
-            `${result.successCount} success, ${result.failureCount} failed`,
+          `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) (${result.failureCount} failed).`,
         );
       }
-
-      // 6. Persist updated baseline AFTER notification is sent
-      await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
     }
   } catch (err) {
     console.error('[FlightWatcher] Error during flight change check:', err);
+  } finally {
+    isCheckInProgress = false;
   }
 
   return { changesDetected, notificationsSent };
 }
 
 /**
- * Start the background polling watcher.
- * Default interval: 3 000 ms — responsive without overloading PostgreSQL.
+ * Start the background polling watcher daemon.
+ * Ensures strictly ONE instance runs with sequential non-overlapping iterations.
  */
 export function startFlightChangeWatcher(intervalMs = 3000): void {
   if (isWatcherRunning) {
-    console.log('[FlightWatcher] Watcher already running.');
+    console.log('[FlightWatcher] Watcher daemon is already running (singleton enforced).');
     return;
   }
 
   isWatcherRunning = true;
   console.log(
-    `[FlightWatcher] Starting background watcher (interval: ${intervalMs}ms)...`,
+    `[FlightWatcher] Starting single background watcher daemon (interval: ${intervalMs}ms)...`,
   );
 
-  // Run an initial check immediately so the baselines are loaded / refreshed
-  checkFlightChanges().catch((err) =>
-    console.error('[FlightWatcher] Initial check failed:', err),
-  );
+  const loop = async () => {
+    if (!isWatcherRunning) return;
+    try {
+      await checkFlightChanges();
+    } catch (err) {
+      console.error('[FlightWatcher] Loop iteration error:', err);
+    }
+    if (isWatcherRunning) {
+      watcherTimeoutHandle = setTimeout(loop, intervalMs);
+    }
+  };
 
-  watcherIntervalTimer = setInterval(async () => {
-    await checkFlightChanges();
-  }, intervalMs);
+  // Run initial iteration immediately
+  loop().catch((err) =>
+    console.error('[FlightWatcher] Initial check loop error:', err),
+  );
 }
 
-/** Stop the background watcher. */
+/** Stop the background watcher daemon. */
 export function stopFlightChangeWatcher(): void {
-  if (watcherIntervalTimer) {
-    clearInterval(watcherIntervalTimer);
-    watcherIntervalTimer = null;
+  if (watcherTimeoutHandle) {
+    clearTimeout(watcherTimeoutHandle);
+    watcherTimeoutHandle = null;
   }
   isWatcherRunning = false;
-  console.log('[FlightWatcher] Background watcher stopped.');
+  console.log('[FlightWatcher] Background watcher daemon stopped.');
 }
+

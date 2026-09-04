@@ -11,6 +11,7 @@ import AuraModal from './features/ai-assistant/components/AuraModal'
 import FloatingAskAIButton from './features/ai-assistant/components/FloatingAskAIButton'
 import { LanguageProvider } from './shared/context/LanguageContext'
 import TicketScanPage from './features/boarding-pass/pages/TicketScanPage'
+import { initializePushNotifications } from './features/flight-tracking/services/pushNotificationService'
 
 function AppContent() {
   const [auraOpen, setAuraOpen] = useState(false)
@@ -19,11 +20,29 @@ function AppContent() {
   })
 
   useEffect(() => {
+    // Determine active flight (stored or default AI-102)
+    const getActiveFlight = () => {
+      try {
+        const raw = sessionStorage.getItem('boardingData')
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          return parsed.flight_id || 'AI-102'
+        }
+      } catch {}
+      return 'AI-102'
+    }
+
+    // Auto-register native FCM token on application start
+    initializePushNotifications(getActiveFlight()).catch((err) => {
+      console.warn('[Main] Push notification auto-init notice:', err)
+    })
+
     const handleOpen = () => setAuraOpen(true)
     const handleClose = () => setAuraOpen(false)
 
     const handleTicketScanned = () => {
       setIsTicketScanned(true)
+      initializePushNotifications(getActiveFlight()).catch(() => {})
     }
 
     const handleResetScan = () => {
@@ -43,6 +62,7 @@ function AppContent() {
       window.removeEventListener('ticket-rescan-event', handleResetScan)
     }
   }, [])
+
 
   // Step 1: Render Ticket Scanner exclusively first if ticket has not been scanned yet
   if (!isTicketScanned) {
