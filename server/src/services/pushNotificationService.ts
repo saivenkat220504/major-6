@@ -203,10 +203,9 @@ export async function sendPushNotification(
       android: {
         priority: 'high',
         ttl: 86400, // 24h TTL so device receives even after brief offline period
-        collapseKey: payload.data?.flightNumber ?? 'flight_update',
         notification: {
           sound: 'default',
-          channelId: 'flight_alerts_v2', // High importance channel created in the client app
+          channelId: 'flight_alerts_v3', // High importance channel created in the client app
           priority: 'max',
           visibility: 'public',
           defaultVibrateTimings: true,
