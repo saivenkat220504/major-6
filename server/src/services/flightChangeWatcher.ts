@@ -15,6 +15,8 @@ import {
   getTokensForFlight,
   getFlightStateSnapshot,
   saveFlightStateSnapshot,
+  toCanonicalFlightNumber,
+  getFlightNumberVariants,
 } from './notificationStorage';
 import { sendPushNotification } from './pushNotificationService';
 
@@ -118,7 +120,7 @@ export async function checkFlightChanges(): Promise<{
         try {
           const raw: any = await prisma.$queryRawUnsafe(
             `SELECT * FROM "flight_info" WHERE UPPER("flight_number") = ANY($1) ORDER BY "updated_at" DESC LIMIT 1`,
-            variants.map((v) => v.toUpperCase()),
+            variants.map((v: string) => v.toUpperCase()),
           );
           if (Array.isArray(raw) && raw.length > 0) record = raw[0];
         } catch (rawErr) {
