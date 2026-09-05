@@ -15,6 +15,8 @@ import {
   getTokensForFlight,
   getFlightStateSnapshot,
   saveFlightStateSnapshot,
+  getBaggageStateSnapshot,
+  saveBaggageStateSnapshot,
   toCanonicalFlightNumber,
   getFlightNumberVariants,
 } from './notificationStorage';
@@ -56,9 +58,40 @@ export function buildNotificationContent(
 }
 
 /**
- * Single iteration: read all flight_info rows, compare each against the
- * persisted FlightStateSnapshot baseline in PostgreSQL, dispatch real FCM notifications
- * for any changed flights, then update the baseline in PostgreSQL.
+ * Extract belt number or arrival belt designation from status text or explicit belt.
+ * Examples:
+ *   "Arrived at Belt 4"  -> "Belt 4"
+ *   "Arrived at Belt 2"  -> "Belt 2"
+ *   "Belt 4"             -> "Belt 4"
+ *   "Belt 12A"           -> "Belt 12A"
+ */
+export function extractBeltDesignation(status: string, explicitBelt?: string | null): string {
+  if (explicitBelt && explicitBelt.trim()) {
+    const trimmed = explicitBelt.trim();
+    if (/^Belt\s+/i.test(trimmed)) return trimmed;
+    return `Belt ${trimmed}`;
+  }
+
+  if (!status) return 'Belt 4';
+  const match = status.match(/(?:Arrived\s+(?:at\s+)?)?(Belt\s*[A-Za-z0-9]+)/i);
+  if (match && match[1]) {
+    return match[1].replace(/Belt\s*/i, 'Belt ');
+  }
+  return 'Belt 4';
+}
+
+/**
+ * Check if status string represents luggage arrival at a baggage reclaim belt.
+ */
+export function isArrivalBeltStatus(status: string): boolean {
+  if (!status) return false;
+  return /Arrived\s+(?:at\s+)?Belt/i.test(status) || /Belt\s*[A-Za-z0-9]+/i.test(status);
+}
+
+/**
+ * Single iteration: read flight_info and baggage_tracking rows for registered flights,
+ * compare each against the persisted snapshots in PostgreSQL, dispatch real FCM
+ * notifications for changes, and update baseline snapshots in PostgreSQL.
  *
  * Concurrency protected: only one check iteration executes at any given time.
  */
@@ -75,15 +108,14 @@ export async function checkFlightChanges(): Promise<{
   let notificationsSent = 0;
 
   try {
-    // 1. Requirement 5, 7, 8, 12: The watcher must load and monitor ONLY that registered flight.
-    // Query PostgreSQL device subscriptions to get active registered flights.
-    // Never monitor all flights, and never use AI-102 as a default or fallback.
+    // 1. Query PostgreSQL device subscriptions to get active registered flights.
+    // The watcher loads and monitors ONLY registered flights.
     const activeSubscriptions: any[] = await prisma.deviceSubscription.findMany({
       select: { flightNumber: true, deviceToken: true },
     });
 
     if (!activeSubscriptions || activeSubscriptions.length === 0) {
-      // No devices currently registered. Watcher stays idle without monitoring arbitrary flights.
+      // No devices currently registered. Watcher stays idle.
       return { changesDetected: 0, notificationsSent: 0 };
     }
 
@@ -101,17 +133,13 @@ export async function checkFlightChanges(): Promise<{
         (s) => toCanonicalFlightNumber(s.flightNumber) === watchedFlight,
       ).length;
 
-      // Log: Watched flight
-      console.log(
-        `[Flow] Watched flight: "${watchedFlight}" (monitoring for ${deviceCount} registered phone subscription(s) in PostgreSQL)`,
-      );
-
-      // 2. Look up the current status for THIS watched flight from flight_info
       const variants = getFlightNumberVariants(watchedFlight);
-      let record: any = null;
+
+      // ─── A. FLIGHT INFO GATE & TERMINAL WATCHER ─────────────────────────
+      let flightRecord: any = null;
 
       try {
-        record = await (prisma as any).flightInfo?.findFirst({
+        flightRecord = await (prisma as any).flightInfo?.findFirst({
           where: {
             flightNumber: { in: variants },
           },
@@ -122,86 +150,166 @@ export async function checkFlightChanges(): Promise<{
             `SELECT * FROM "flight_info" WHERE UPPER("flight_number") = ANY($1) ORDER BY "updated_at" DESC LIMIT 1`,
             variants.map((v: string) => v.toUpperCase()),
           );
-          if (Array.isArray(raw) && raw.length > 0) record = raw[0];
+          if (Array.isArray(raw) && raw.length > 0) flightRecord = raw[0];
         } catch (rawErr) {
           console.warn(`[FlightWatcher] Raw query failed for flight ${watchedFlight}:`, rawErr);
         }
       }
 
-      if (!record) {
-        console.log(`[FlightWatcher] No flight_info record configured in DB for watched flight "${watchedFlight}".`);
-        continue;
+      if (flightRecord) {
+        const currentTerminal = (
+          flightRecord.departureTerminal || flightRecord.departure_terminal || ''
+        ).trim();
+        const currentGate = (flightRecord.assignedGate || flightRecord.assigned_gate || '').trim();
+
+        if (currentTerminal || currentGate) {
+          const flightSnapshot = await getFlightStateSnapshot(watchedFlight);
+
+          if (!flightSnapshot) {
+            await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
+            console.log(
+              `[FlightWatcher] Initialized baseline for flight "${watchedFlight}": terminal="${currentTerminal}", gate="${currentGate}"`,
+            );
+          } else {
+            const terminalChanged = flightSnapshot.terminal !== currentTerminal;
+            const gateChanged = flightSnapshot.gate !== currentGate;
+
+            if (terminalChanged || gateChanged) {
+              changesDetected++;
+              console.log(
+                `[Flow] Triggered flight notification: "${watchedFlight}" (Gate: "${flightSnapshot.gate}" → "${currentGate}", Terminal: "${flightSnapshot.terminal}" → "${currentTerminal}")`,
+              );
+
+              const payload = buildNotificationContent(
+                watchedFlight,
+                { terminal: flightSnapshot.terminal, gate: flightSnapshot.gate },
+                { terminal: currentTerminal, gate: currentGate },
+              );
+
+              const tokens = await getTokensForFlight(watchedFlight);
+              if (tokens.length > 0) {
+                const result = await sendPushNotification(tokens, {
+                  ...payload,
+                  data: {
+                    flightNumber: watchedFlight,
+                    terminal: currentTerminal,
+                    gate: currentGate,
+                    type: 'FLIGHT_CHANGE',
+                  },
+                });
+
+                if (result.successCount > 0 || result.mocked) {
+                  await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
+                  notificationsSent += result.successCount;
+                  console.log(
+                    `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) for flight "${watchedFlight}".`,
+                  );
+                }
+              }
+            }
+          }
+        }
       }
 
-      const currentTerminal = (
-        record.departureTerminal || record.departure_terminal || ''
-      ).trim();
-      const currentGate = (record.assignedGate || record.assigned_gate || '').trim();
-
-      if (!currentTerminal && !currentGate) continue;
-
-      // 3. Load persisted baseline snapshot from PostgreSQL
-      const snapshot = await getFlightStateSnapshot(watchedFlight);
-
-      if (!snapshot) {
-        // No baseline yet — record current state as starting baseline in PostgreSQL
-        await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
-        console.log(
-          `[FlightWatcher] Initialized baseline for watched flight "${watchedFlight}": terminal="${currentTerminal}", gate="${currentGate}"`,
-        );
-        continue;
-      }
-
-      const terminalChanged = snapshot.terminal !== currentTerminal;
-      const gateChanged = snapshot.gate !== currentGate;
-
-      if (!terminalChanged && !gateChanged) {
-        // No change for this flight
-        continue;
-      }
-
-      changesDetected++;
-      // Log: Triggered notification flight
-      console.log(
-        `[Flow] Triggered notification flight: "${watchedFlight}" (Gate: "${snapshot.gate}" → "${currentGate}", Terminal: "${snapshot.terminal}" → "${currentTerminal}")`,
-      );
-
-      // Update baseline immediately in PostgreSQL to prevent duplicate dispatch
-      await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
-
-      // 4. Build notification payload using the EXACT watched flight number
-      const payload = buildNotificationContent(
-        watchedFlight,
-        { terminal: snapshot.terminal, gate: snapshot.gate },
-        { terminal: currentTerminal, gate: currentGate },
-      );
-
-      // 5. Retrieve registered device tokens for THIS watched flight from PostgreSQL
-      const tokens = await getTokensForFlight(watchedFlight);
-
-      if (tokens.length === 0) {
-        console.log(
-          `[FlightWatcher] 0 active devices in PostgreSQL for flight "${watchedFlight}". Dispatch skipped.`,
-        );
-      } else {
-        // 6. Dispatch real FCM push notification
-        const result = await sendPushNotification(tokens, {
-          ...payload,
-          data: {
-            flightNumber: watchedFlight,
-            terminal: currentTerminal,
-            gate: currentGate,
-            type: 'FLIGHT_CHANGE',
+      // ─── B. BAGGAGE STATUS & ARRIVAL BELT WATCHER ───────────────────────
+      let baggageRecords: any[] = [];
+      try {
+        baggageRecords = await (prisma as any).baggageTracking.findMany({
+          where: {
+            flightNumber: { in: variants },
           },
         });
-        notificationsSent += result.successCount;
-        console.log(
-          `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) for flight "${watchedFlight}" (${result.failureCount} failed).`,
-        );
+      } catch (bagErr: any) {
+        // Safe query in case table is freshly created
+        try {
+          const rawBags: any = await prisma.$queryRawUnsafe(
+            `SELECT * FROM "baggage_tracking" WHERE UPPER("flight_number") = ANY($1)`,
+            variants.map((v: string) => v.toUpperCase()),
+          );
+          if (Array.isArray(rawBags)) baggageRecords = rawBags;
+        } catch {}
+      }
+
+      for (const bag of baggageRecords) {
+        const tagNumber = (bag.tagNumber || bag.tag_number || '').trim();
+        const currentStatus = (bag.status || '').trim();
+        const currentBelt = extractBeltDesignation(currentStatus, bag.belt);
+
+        if (!tagNumber || !currentStatus) continue;
+
+        const bagSnapshot = await getBaggageStateSnapshot(tagNumber);
+
+        if (!bagSnapshot) {
+          // No baseline recorded yet — save starting state so we only notify on genuine transitions
+          await saveBaggageStateSnapshot(tagNumber, watchedFlight, currentStatus, currentBelt);
+          console.log(
+            `[BaggageWatcher] Initialized baseline for tag "${tagNumber}" (flight "${watchedFlight}"): status="${currentStatus}", belt="${currentBelt}"`,
+          );
+          continue;
+        }
+
+        const statusChanged = bagSnapshot.status !== currentStatus;
+        if (!statusChanged) {
+          // Status has not changed — strictly prevent repeated notifications
+          continue;
+        }
+
+        // Check if transition is to an arrival belt status (e.g. "Arrived at Belt 4", "Arrived at Belt 2")
+        const isArrival = isArrivalBeltStatus(currentStatus);
+
+        if (isArrival) {
+          changesDetected++;
+          const notificationBody = `Your luggage has arrived at ${currentBelt}.`;
+
+          console.log(
+            `[Flow] Triggered baggage notification flight: "${watchedFlight}" tag: "${tagNumber}" (Status: "${bagSnapshot.status}" → "${currentStatus}")`,
+          );
+          console.log(`[Flow] Notification message: "${notificationBody}"`);
+
+          const tokens = await getTokensForFlight(watchedFlight);
+
+          if (tokens.length === 0) {
+            console.log(
+              `[BaggageWatcher] 0 active devices registered for flight "${watchedFlight}". Dispatch skipped.`,
+            );
+          } else {
+            // Dispatch FCM Push Notification to the phone registered for this flight
+            const result = await sendPushNotification(tokens, {
+              title: 'Luggage Arrival',
+              body: notificationBody,
+              data: {
+                flightNumber: watchedFlight,
+                tagNumber,
+                status: currentStatus,
+                belt: currentBelt,
+                type: 'BAGGAGE_ARRIVAL',
+              },
+            });
+
+            // Mark snapshot safely after dispatch succeeds to prevent duplicates across restarts
+            if (result.successCount > 0 || result.mocked) {
+              await saveBaggageStateSnapshot(tagNumber, watchedFlight, currentStatus, currentBelt);
+              notificationsSent += result.successCount;
+              console.log(
+                `[BaggageWatcher] ✅ Baggage push notification delivered to ${result.successCount}/${tokens.length} device(s) for flight "${watchedFlight}".`,
+              );
+            } else {
+              console.warn(
+                `[BaggageWatcher] ⚠️ FCM dispatch failed for flight "${watchedFlight}". Snapshot not advanced; will retry on next iteration.`,
+              );
+            }
+          }
+        } else {
+          // Status changed to non-arrival state (e.g. "Loaded onto Aircraft") — update baseline without sending arrival alert
+          await saveBaggageStateSnapshot(tagNumber, watchedFlight, currentStatus, currentBelt);
+          console.log(
+            `[BaggageWatcher] Updated baseline for tag "${tagNumber}": status="${currentStatus}" (non-arrival state, no push required).`,
+          );
+        }
       }
     }
   } catch (err) {
-    console.error('[FlightWatcher] Error during flight change check:', err);
+    console.error('[FlightWatcher] Error during flight/baggage change check:', err);
   } finally {
     isCheckInProgress = false;
   }

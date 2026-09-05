@@ -176,3 +176,35 @@ model FlightStateSnapshot {
 
   @@map("flight_state_snapshots")
 }
+
+// ── Baggage Tracking ──────────────────────────────────────────────────────────
+
+model BaggageTracking {
+  id               String   @id @default(uuid())
+  flightNumber     String   @map("flight_number")
+  tagNumber        String   @unique @map("tag_number")
+  passengerName    String?  @map("passenger_name")
+  status           String   @default("Loaded onto Aircraft")
+  belt             String?
+  eta              String?
+  lastScanLocation String?  @map("last_scan_location")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("baggage_tracking")
+}
+
+// ── Baggage State Snapshots (watcher baseline – persisted across restarts) ─────
+// Stores the last-notified status and belt for each baggage tag so the
+// change-detection baseline is never lost and duplicate notifications are strictly prevented.
+
+model BaggageStateSnapshot {
+  tagNumber      String   @id @map("tag_number")
+  flightNumber   String   @map("flight_number")
+  status         String
+  belt           String?
+  lastNotifiedAt DateTime @default(now()) @map("last_notified_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("baggage_state_snapshots")
+}

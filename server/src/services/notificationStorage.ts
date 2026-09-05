@@ -29,6 +29,14 @@ export interface FlightStateSnapshot {
   recordedAt: string;
 }
 
+export interface BaggageStateSnapshot {
+  tagNumber: string;
+  flightNumber: string;
+  status: string;
+  belt?: string | null;
+  lastNotifiedAt: string;
+}
+
 // ─── ICAO → IATA Airline Code Mapping ────────────────────────────────────────
 
 /**
@@ -306,6 +314,56 @@ export async function saveFlightStateSnapshot(
     where: { flightNumber: canonicalFlight },
     update: { terminal, gate },
     create: { flightNumber: canonicalFlight, terminal, gate },
+  });
+}
+
+// ─── Baggage state snapshots (PostgreSQL – survives restarts) ────────────────
+
+/**
+ * Load the persisted baseline for a baggage tag from PostgreSQL.
+ * Returns null if no baseline has been recorded yet.
+ */
+export async function getBaggageStateSnapshot(
+  tagNumber: string,
+): Promise<BaggageStateSnapshot | null> {
+  const record = await prisma.baggageStateSnapshot.findUnique({
+    where: { tagNumber },
+  });
+  if (!record) return null;
+  return {
+    tagNumber: record.tagNumber,
+    flightNumber: record.flightNumber,
+    status: record.status,
+    belt: record.belt,
+    lastNotifiedAt: record.lastNotifiedAt.toISOString(),
+  };
+}
+
+/**
+ * Persist (upsert) the last-notified status and belt for a baggage tag.
+ */
+export async function saveBaggageStateSnapshot(
+  tagNumber: string,
+  flightNumber: string,
+  status: string,
+  belt?: string | null,
+): Promise<void> {
+  const canonicalFlight = toCanonicalFlightNumber(flightNumber);
+  await prisma.baggageStateSnapshot.upsert({
+    where: { tagNumber },
+    update: {
+      flightNumber: canonicalFlight,
+      status,
+      belt: belt ?? null,
+      lastNotifiedAt: new Date(),
+    },
+    create: {
+      tagNumber,
+      flightNumber: canonicalFlight,
+      status,
+      belt: belt ?? null,
+      lastNotifiedAt: new Date(),
+    },
   });
 }
 

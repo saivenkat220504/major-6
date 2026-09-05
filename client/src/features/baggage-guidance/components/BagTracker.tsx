@@ -770,7 +770,16 @@ export default function BagTracker() {
   useEffect(() => {
     async function fetchBags() {
       try {
-        const response = await axios.get<BagTag[]>('/api/baggage/tags')
+        let flightParam = ''
+        try {
+          const raw = sessionStorage.getItem('boardingData')
+          if (raw) {
+            const parsed = JSON.parse(raw)
+            if (parsed.flight_id) flightParam = `?flight=${encodeURIComponent(parsed.flight_id.trim())}`
+          }
+        } catch {}
+
+        const response = await axios.get<BagTag[]>(`/api/baggage/tags${flightParam}`)
         if (Array.isArray(response.data) && response.data.length > 0) {
           setBags(response.data)
         } else {
