@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getFlightInfo, updateFlightInfo } from '../controllers/flightInfoController';
-import { registerDeviceToken, getDeviceSubscriptions } from '../services/notificationStorage';
+import { registerDeviceToken, getDeviceSubscriptions, getTokensForFlight, maskToken } from '../services/notificationStorage';
 import { checkFlightChanges } from '../services/flightChangeWatcher';
 
 const router = Router();
@@ -16,30 +16,66 @@ router.post('/', updateFlightInfo);
  * Registers an Android push notification token mapped to a flight number
  */
 router.post('/register-device', async (req: Request, res: Response) => {
+  const requestTime = new Date().toISOString();
+  const rawToken = req.body?.token;
+  const rawFlight = req.body?.flightNumber;
+  const rawPlatform = req.body?.platform;
+
+  console.log('================================================================================');
+  console.log(`[DeviceRegistration] 📥 [${requestTime}] INCOMING REGISTRATION REQUEST`);
+  console.log(`  - Origin: ${req.headers.origin || req.headers.host || 'unknown'}`);
+  console.log(`  - User-Agent: ${req.headers['user-agent'] || 'unknown'}`);
+  console.log(`  - Client IP: ${req.ip || req.socket.remoteAddress}`);
+  console.log(`  - Flight Number Received: "${rawFlight}"`);
+  console.log(`  - Platform Received: "${rawPlatform || 'android'}"`);
+  console.log(`  - Token Provided: ${Boolean(rawToken)}`);
+  console.log(`  - Token Length: ${rawToken ? rawToken.length : 0}`);
+  console.log(`  - Token (masked): "${maskToken(rawToken || '')}"`);
+
   try {
-    const { token, flightNumber, platform } = req.body;
-    if (!token || !flightNumber) {
+    if (!rawToken || !rawFlight) {
+      console.warn(`[DeviceRegistration] ❌ 400 Bad Request - Missing required fields:`, {
+        hasToken: Boolean(rawToken),
+        hasFlightNumber: Boolean(rawFlight),
+      });
+      console.log('================================================================================');
       return res.status(400).json({
         success: false,
         error: 'Missing required fields: token, flightNumber',
       });
     }
 
-    const subscription = await registerDeviceToken(token, flightNumber, platform || 'android');
+    console.log(`[DeviceRegistration] 🔄 Executing PostgreSQL upsert for flight "${rawFlight}"...`);
+    const subscription = await registerDeviceToken(rawToken, rawFlight, rawPlatform || 'android');
+
+    // Query active tokens for this flight to report exact database count
+    const activeTokens = await getTokensForFlight(rawFlight);
+
+    console.log(`[DeviceRegistration] 💾 PostgreSQL Upsert SUCCESS:`);
+    console.log(`  - Canonical Flight Stored: "${subscription.flightNumber}"`);
+    console.log(`  - Token Stored (masked): "${maskToken(subscription.token)}"`);
+    console.log(`  - Platform: "${subscription.platform}"`);
+    console.log(`  - Timestamp: ${subscription.updatedAt}`);
+    console.log(`  - Total active devices in DB for flight "${rawFlight}": ${activeTokens.length}`);
+    console.log('================================================================================');
+
     return res.json({
       success: true,
-      message: 'Device push token registered successfully',
+      message: 'Device push token registered successfully in PostgreSQL',
       data: subscription,
+      activeDevicesForFlight: activeTokens.length,
     });
   } catch (err: any) {
-    console.error('[FlightInfoRoute] Failed to register device:', err);
+    console.error('[DeviceRegistration] ❌ Database / Server Error:', err.message || err);
+    console.log('================================================================================');
     return res.status(500).json({
       success: false,
-      error: 'Internal server error registering device',
+      error: 'Internal server error registering device in database',
       message: err.message,
     });
   }
 });
+
 
 /**
  * GET /api/flight-info/registered-devices

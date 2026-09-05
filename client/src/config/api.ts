@@ -1,7 +1,8 @@
 import axios from 'axios'
 
-const apiBaseUrl = import.meta.env.VITE_API_URL.replace(/\/$/, '')
+const apiBaseUrl = (import.meta.env.VITE_API_URL || 'https://major-6-o85h.onrender.com').replace(/\/$/, '')
 const useDevProxy = import.meta.env.DEV
+
 
 axios.defaults.baseURL = useDevProxy ? '' : apiBaseUrl
 
