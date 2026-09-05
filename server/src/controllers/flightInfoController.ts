@@ -16,18 +16,19 @@ export async function getFlightInfo(req: Request, res: Response) {
 
     let flightRecord: any = null;
 
-    // 1. If flightNumber is provided, filter database by this flightNumber
+    // 1. If flightNumber is provided, filter database by this flightNumber and its variants
     if (flightNumberParam && flightNumberParam.trim()) {
       const targetFlightNumber = flightNumberParam.trim().toUpperCase();
+      const variants = [targetFlightNumber, targetFlightNumber.replace(/-/g, ''), targetFlightNumber.replace(/\s+/g, '')];
       try {
-        flightRecord = await (prisma as any).flightInfo?.findUnique({
-          where: { flightNumber: targetFlightNumber }
+        flightRecord = await (prisma as any).flightInfo?.findFirst({
+          where: { flightNumber: { in: variants } }
         });
       } catch {
         try {
           const rawRecords: any = await prisma.$queryRawUnsafe(
-            `SELECT * FROM "flight_info" WHERE UPPER("flight_number") = $1 LIMIT 1`,
-            targetFlightNumber
+            `SELECT * FROM "flight_info" WHERE UPPER("flight_number") = ANY($1) LIMIT 1`,
+            variants
           );
           if (Array.isArray(rawRecords) && rawRecords.length > 0) {
             flightRecord = rawRecords[0];

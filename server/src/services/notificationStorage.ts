@@ -172,6 +172,19 @@ export async function registerDeviceToken(
 ): Promise<DeviceSubscription> {
   const canonicalFlight = toCanonicalFlightNumber(flightNumber);
 
+  // Requirement 13: Remove stale subscriptions for unrelated flights belonging to the same device
+  const stale = await prisma.deviceSubscription.deleteMany({
+    where: {
+      deviceToken: token,
+      flightNumber: { not: canonicalFlight },
+    },
+  });
+  if (stale.count > 0) {
+    console.log(
+      `[NotificationStorage] 🧹 Cleaned ${stale.count} stale subscription(s) for device [${maskToken(token)}] from previous flights`,
+    );
+  }
+
   const record = await prisma.deviceSubscription.upsert({
     where: {
       flightNumber_deviceToken: {
@@ -184,7 +197,7 @@ export async function registerDeviceToken(
   });
 
   console.log(
-    `[NotificationStorage] ✅ Upserted device for flight ${canonicalFlight} (token: ${maskToken(token)}) in PostgreSQL`,
+    `[Flow] Stored flight in PostgreSQL: "${canonicalFlight}" for device [${maskToken(token)}]`,
   );
 
   return {

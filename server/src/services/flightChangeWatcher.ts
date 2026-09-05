@@ -73,31 +73,64 @@ export async function checkFlightChanges(): Promise<{
   let notificationsSent = 0;
 
   try {
-    // 1. Fetch current flight records from the database
-    let records: any[] = [];
-    try {
-      records = (await (prisma as any).flightInfo?.findMany()) ?? [];
-    } catch {
-      try {
-        const raw: any = await prisma.$queryRawUnsafe(
-          `SELECT * FROM "flight_info" ORDER BY "updated_at" DESC`,
-        );
-        if (Array.isArray(raw)) records = raw;
-      } catch (rawErr) {
-        console.warn('[FlightWatcher] Raw query failed:', rawErr);
-      }
-    }
+    // 1. Requirement 5, 7, 8, 12: The watcher must load and monitor ONLY that registered flight.
+    // Query PostgreSQL device subscriptions to get active registered flights.
+    // Never monitor all flights, and never use AI-102 as a default or fallback.
+    const activeSubscriptions: any[] = await prisma.deviceSubscription.findMany({
+      select: { flightNumber: true, deviceToken: true },
+    });
 
-    if (!records || records.length === 0) {
+    if (!activeSubscriptions || activeSubscriptions.length === 0) {
+      // No devices currently registered. Watcher stays idle without monitoring arbitrary flights.
       return { changesDetected: 0, notificationsSent: 0 };
     }
 
-    for (const record of records) {
-      const flightNum = (
-        record.flightNumber || record.flight_number || 'AI-102'
-      )
-        .trim()
-        .toUpperCase();
+    // Extract unique canonical flight numbers with active device subscriptions
+    const uniqueFlights = Array.from(
+      new Set(
+        activeSubscriptions
+          .map((s) => toCanonicalFlightNumber(s.flightNumber))
+          .filter(Boolean),
+      ),
+    );
+
+    for (const watchedFlight of uniqueFlights) {
+      const deviceCount = activeSubscriptions.filter(
+        (s) => toCanonicalFlightNumber(s.flightNumber) === watchedFlight,
+      ).length;
+
+      // Log: Watched flight
+      console.log(
+        `[Flow] Watched flight: "${watchedFlight}" (monitoring for ${deviceCount} registered phone subscription(s) in PostgreSQL)`,
+      );
+
+      // 2. Look up the current status for THIS watched flight from flight_info
+      const variants = getFlightNumberVariants(watchedFlight);
+      let record: any = null;
+
+      try {
+        record = await (prisma as any).flightInfo?.findFirst({
+          where: {
+            flightNumber: { in: variants },
+          },
+        });
+      } catch {
+        try {
+          const raw: any = await prisma.$queryRawUnsafe(
+            `SELECT * FROM "flight_info" WHERE UPPER("flight_number") = ANY($1) ORDER BY "updated_at" DESC LIMIT 1`,
+            variants.map((v) => v.toUpperCase()),
+          );
+          if (Array.isArray(raw) && raw.length > 0) record = raw[0];
+        } catch (rawErr) {
+          console.warn(`[FlightWatcher] Raw query failed for flight ${watchedFlight}:`, rawErr);
+        }
+      }
+
+      if (!record) {
+        console.log(`[FlightWatcher] No flight_info record configured in DB for watched flight "${watchedFlight}".`);
+        continue;
+      }
+
       const currentTerminal = (
         record.departureTerminal || record.departure_terminal || ''
       ).trim();
@@ -105,14 +138,14 @@ export async function checkFlightChanges(): Promise<{
 
       if (!currentTerminal && !currentGate) continue;
 
-      // 2. Load persisted baseline from PostgreSQL
-      const snapshot = await getFlightStateSnapshot(flightNum);
+      // 3. Load persisted baseline snapshot from PostgreSQL
+      const snapshot = await getFlightStateSnapshot(watchedFlight);
 
       if (!snapshot) {
-        // No baseline yet — record current state as starting baseline in PostgreSQL.
-        await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
+        // No baseline yet — record current state as starting baseline in PostgreSQL
+        await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
         console.log(
-          `[FlightWatcher] Initialised baseline for ${flightNum}: terminal="${currentTerminal}", gate="${currentGate}"`,
+          `[FlightWatcher] Initialized baseline for watched flight "${watchedFlight}": terminal="${currentTerminal}", gate="${currentGate}"`,
         );
         continue;
       }
@@ -121,39 +154,39 @@ export async function checkFlightChanges(): Promise<{
       const gateChanged = snapshot.gate !== currentGate;
 
       if (!terminalChanged && !gateChanged) {
-        // No change — nothing to dispatch.
+        // No change for this flight
         continue;
       }
 
       changesDetected++;
-      console.log(`[FlightWatcher] ✈ Flight update detected for flight ${flightNum}:`);
-      console.log(`  Terminal: "${snapshot.terminal}" → "${currentTerminal}"`);
-      console.log(`  Gate:     "${snapshot.gate}" → "${currentGate}"`);
+      // Log: Triggered notification flight
+      console.log(
+        `[Flow] Triggered notification flight: "${watchedFlight}" (Gate: "${snapshot.gate}" → "${currentGate}", Terminal: "${snapshot.terminal}" → "${currentTerminal}")`,
+      );
 
-      // Update baseline immediately to prevent re-triggering while dispatching
-      await saveFlightStateSnapshot(flightNum, currentTerminal, currentGate);
+      // Update baseline immediately in PostgreSQL to prevent duplicate dispatch
+      await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
 
-      // 3. Build notification payload
+      // 4. Build notification payload using the EXACT watched flight number
       const payload = buildNotificationContent(
-        flightNum,
+        watchedFlight,
         { terminal: snapshot.terminal, gate: snapshot.gate },
         { terminal: currentTerminal, gate: currentGate },
       );
 
-      // 4. Retrieve registered device tokens from PostgreSQL
-      const tokens = await getTokensForFlight(flightNum);
+      // 5. Retrieve registered device tokens for THIS watched flight from PostgreSQL
+      const tokens = await getTokensForFlight(watchedFlight);
 
       if (tokens.length === 0) {
-        // Strictly report real database count; NEVER mock or fake tokens
         console.log(
-          `[FlightWatcher] 0 registered device(s) found in PostgreSQL for flight ${flightNum}. Real push dispatch skipped.`,
+          `[FlightWatcher] 0 active devices in PostgreSQL for flight "${watchedFlight}". Dispatch skipped.`,
         );
       } else {
-        // 5. Dispatch real FCM push notification
+        // 6. Dispatch real FCM push notification
         const result = await sendPushNotification(tokens, {
           ...payload,
           data: {
-            flightNumber: flightNum,
+            flightNumber: watchedFlight,
             terminal: currentTerminal,
             gate: currentGate,
             type: 'FLIGHT_CHANGE',
@@ -161,7 +194,7 @@ export async function checkFlightChanges(): Promise<{
         });
         notificationsSent += result.successCount;
         console.log(
-          `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) (${result.failureCount} failed).`,
+          `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) for flight "${watchedFlight}" (${result.failureCount} failed).`,
         );
       }
     }

@@ -45,6 +45,7 @@ router.post('/register-device', async (req: Request, res: Response) => {
       });
     }
 
+    console.log(`[Flow] Registered flight received on Render: "${rawFlight}" for device [${maskToken(rawToken)}]`);
     console.log(`[DeviceRegistration] 🔄 Executing PostgreSQL upsert for flight "${rawFlight}"...`);
     const subscription = await registerDeviceToken(rawToken, rawFlight, rawPlatform || 'android');
 

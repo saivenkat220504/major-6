@@ -107,10 +107,13 @@ export async function sendTokenRegistration(
   const canonicalFlight = normalizeFlightNumber(rawFlight);
   const masked = maskToken(token);
 
+  console.log(`[Flow] Scanned flight: "${rawFlight}" → Canonical flight: "${canonicalFlight}"`);
+  console.log(`[Flow] Registered flight: "${canonicalFlight}" (transmitting to Render for device [${masked}])`);
+
   console.log('----------------------------------------------------------------');
   console.log(`[PushRegistration] 🚀 [Attempt ${attempt}/3] DISPATCHING REGISTRATION TO RENDER:`);
   console.log(`  - Target URL         : ${endpoint}`);
-  console.log(`  - Raw flight received: "${rawFlight}"`);
+  console.log(`  - Scanned flight     : "${rawFlight}"`);
   console.log(`  - Canonical flight   : "${canonicalFlight}"`);
   console.log(`  - Token (masked)     : "${masked}" (length: ${token.length})`);
   console.log(`  - Platform           : "android"`);

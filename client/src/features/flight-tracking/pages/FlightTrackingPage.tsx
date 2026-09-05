@@ -125,20 +125,20 @@ export default function FlightTrackingPage() {
   }, [])
 
   useEffect(() => {
-    const flightNum = flightInfo?.flightNumber || boardingData?.flight_id || 'AI-102'
+    const flightNum = (boardingData?.flight_id || flightInfo?.flightNumber || '').trim()
     if (flightNum) {
       initializePushNotifications(flightNum).catch((e) =>
         console.error('[FlightTracking] Failed to register push token:', e)
       )
     }
-  }, [flightInfo?.flightNumber, boardingData?.flight_id])
+  }, [boardingData?.flight_id, flightInfo?.flightNumber])
 
   // Derived values from database response
   const departureTerminal = flightInfo?.departureTerminal || flightInfo?.departure_terminal
   const assignedGate = flightInfo?.assignedGate || flightInfo?.assigned_gate
   const seatAssignment = flightInfo?.seatAssignment || flightInfo?.seat_assignment
   const flightDate = flightInfo?.flightDate || flightInfo?.flight_date
-  const flightNumber = flightInfo?.flightNumber || boardingData?.flight_id || 'AI-102'
+  const flightNumber = boardingData?.flight_id || flightInfo?.flightNumber || '---'
 
   const statusInfo = STATUS_CONFIG[currentStatus]
 
