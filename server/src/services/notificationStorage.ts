@@ -29,40 +29,131 @@ export interface FlightStateSnapshot {
   recordedAt: string;
 }
 
+// ─── ICAO → IATA Airline Code Mapping ────────────────────────────────────────
+
+/**
+ * Maps 3-letter ICAO airline codes (as embedded in some BCBP barcodes) to the
+ * correct 2/3-character IATA code used in flight numbers.
+ *
+ * When a PDF417 barcode is decoded, the 3-character carrier field sometimes
+ * yields an ICAO code (e.g. "ING" for IndiGo) instead of the IATA code ("6E").
+ * This causes malformed flight numbers like "ING6E241" or "ING241".
+ */
+const ICAO_TO_IATA: Record<string, string> = {
+  ING: '6E', // IndiGo Airlines (ICAO: IGO/ING → IATA: 6E)
+  IGO: '6E', // IndiGo Airlines alternate ICAO
+  IAC: '6E', // Legacy code
+  AIC: 'AI', // Air India (ICAO: AIC → IATA: AI)
+  AIE: 'AI', // Air India Express (ICAO: AIE → IATA: IX) — keep as IX
+  AIX: 'IX', // Air India Express IATA
+  SXB: 'S5', // SpiceJet (ICAO: SXB → IATA: SG)
+  SEJ: 'SG', // SpiceJet IATA: SG
+  GOW: 'G8', // GoAir/Go First
+  VTI: 'UK', // Vistara (ICAO: VTI → IATA: UK)
+  CTM: 'QP', // Akasa Air
+  BTI: '9W', // Jet Airways
+};
+
+/**
+ * Remove any ICAO airline prefix that may have been prepended to a flight number.
+ * E.g. "ING6E241" → "6E241", "AIC102" → "AI102", "ING241" → "6E241"
+ *
+ * Handles cases where:
+ *  a) ICAO prefix + IATA prefix + number  → strip ICAO, keep IATA + number
+ *  b) ICAO prefix + number only           → replace ICAO with IATA + number
+ */
+function stripIcaoPrefix(raw: string): string {
+  for (const [icao, iata] of Object.entries(ICAO_TO_IATA)) {
+    if (!raw.startsWith(icao)) continue;
+
+    const remainder = raw.substring(icao.length); // e.g. "6E241" or "241"
+
+    // Case a: remainder already starts with the correct IATA code (e.g. ING + 6E241)
+    if (remainder.startsWith(iata)) {
+      console.log(
+        `[FlightNorm] 🔧 ICAO prefix stripped: "${raw}" → "${remainder}" (ICAO "${icao}" + IATA prefix "${iata}")`,
+      );
+      return remainder; // "6E241"
+    }
+
+    // Case b: remainder is just the number (e.g. ING + 241 → 6E241)
+    if (/^[0-9]/.test(remainder)) {
+      const corrected = `${iata}${remainder}`;
+      console.log(
+        `[FlightNorm] 🔧 ICAO-to-IATA remapped: "${raw}" → "${corrected}" (ICAO "${icao}" → IATA "${iata}")`,
+      );
+      return corrected; // "6E241"
+    }
+  }
+  return raw; // No ICAO prefix found
+}
+
 // ─── Flight Number Canonicalization & Variants ────────────────────────────────
 
 /**
- * Standardize flight numbers into canonical format.
- * e.g., "ai 102" -> "AI-102", "AI102" -> "AI-102", "6E2412" -> "6E-2412"
+ * Standardize flight numbers into canonical IATA format.
+ *
+ * Normalization pipeline (applied in order):
+ *  1. Trim & uppercase
+ *  2. Strip known ICAO airline prefixes  (ING6E241 → 6E241)
+ *  3. Insert hyphen between airline code and number  (6E241 → 6E-241, AI102 → AI-102)
+ *
+ * Examples:
+ *   "ING6E241" → "6E-241"
+ *   "IGO6E241" → "6E-241"
+ *   "ING241"   → "6E-241"
+ *   "AIC102"   → "AI-102"
+ *   "6E241"    → "6E-241"
+ *   "AI102"    → "AI-102"
+ *   "ai-102"   → "AI-102"
  */
 export function toCanonicalFlightNumber(flightNumber: string): string {
   if (!flightNumber) return '';
-  const clean = flightNumber.trim().toUpperCase();
-  const match = clean.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
+
+  const raw = flightNumber.trim().toUpperCase();
+  console.log(`[FlightNorm] Raw input: "${raw}"`);
+
+  // Step 1: Strip ICAO prefixes
+  const deIcao = stripIcaoPrefix(raw);
+
+  // Step 2: Normalize separator (insert hyphen between airline code and number)
+  const match = deIcao.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
   if (match) {
-    return `${match[1]}-${match[2]}`;
+    const canonical = `${match[1]}-${match[2]}`;
+    if (canonical !== raw) {
+      console.log(`[FlightNorm] ✅ Canonical: "${raw}" → "${canonical}"`);
+    }
+    return canonical;
   }
-  return clean;
+
+  // If no standard pattern matched, return de-ICAO'd value
+  return deIcao;
 }
 
 /**
  * Generate all plausible query variants for a flight number to guarantee matching
- * between registration and database queries (e.g. "AI-102", "AI102", "AI 102").
+ * between registration and database queries (e.g. "6E-241", "6E241", "6E 241").
  */
 export function getFlightNumberVariants(flightNumber: string): string[] {
   if (!flightNumber) return [];
-  const clean = flightNumber.trim().toUpperCase();
-  const set = new Set<string>();
-  set.add(clean);
 
-  const match = clean.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
+  // Always canonicalize first so variants are based on the clean form
+  const canonical = toCanonicalFlightNumber(flightNumber);
+  const set = new Set<string>();
+  set.add(canonical);
+
+  const match = canonical.match(/^([A-Z]{2,3}|[A-Z0-9]{2})-([0-9]+)$/);
   if (match) {
     const code = match[1];
     const num = match[2];
-    set.add(`${code}-${num}`);
-    set.add(`${code}${num}`);
-    set.add(`${code} ${num}`);
+    set.add(`${code}-${num}`); // 6E-241
+    set.add(`${code}${num}`);  // 6E241
+    set.add(`${code} ${num}`); // 6E 241
   }
+
+  // Also add the raw input as a safety net for legacy records
+  const rawClean = flightNumber.trim().toUpperCase();
+  set.add(rawClean);
 
   return Array.from(set);
 }

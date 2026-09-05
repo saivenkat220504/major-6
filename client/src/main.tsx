@@ -20,34 +20,50 @@ function AppContent() {
   })
 
   useEffect(() => {
-    // Determine active flight (stored or default AI-102)
+    // Read the confirmed flight from sessionStorage (written by TicketScanPage after successful scan).
+    // This is intentionally NOT called on cold start before the ticket is scanned
+    // so we never register under a stale or default flight number like 'AI-102'.
     const getActiveFlight = () => {
       try {
         const raw = sessionStorage.getItem('boardingData')
         if (raw) {
           const parsed = JSON.parse(raw)
-          return parsed.flight_id || 'AI-102'
+          const rawFlight = (parsed.flight_id || '').trim()
+          return rawFlight // normalizeFlightNumber() is called inside initializePushNotifications
         }
       } catch {}
-      return 'AI-102'
+      return '' // Return empty — will cause initializePushNotifications to skip registration
     }
-
-    // Auto-register native FCM token on application start
-    initializePushNotifications(getActiveFlight()).catch((err) => {
-      console.warn('[Main] Push notification auto-init notice:', err)
-    })
 
     const handleOpen = () => setAuraOpen(true)
     const handleClose = () => setAuraOpen(false)
 
     const handleTicketScanned = () => {
       setIsTicketScanned(true)
-      initializePushNotifications(getActiveFlight()).catch(() => {})
+      // Only now do we have the real flight_id in sessionStorage — safe to register
+      const confirmedFlight = getActiveFlight()
+      if (confirmedFlight) {
+        console.log(`[Main] Ticket scanned. Initiating FCM registration for flight: "${confirmedFlight}"`)
+        initializePushNotifications(confirmedFlight).catch((e) =>
+          console.warn('[Main] Push notification init after scan:', e)
+        )
+      } else {
+        console.warn('[Main] Ticket scanned but no flight_id found in sessionStorage. FCM registration skipped.')
+      }
     }
 
     const handleResetScan = () => {
       sessionStorage.removeItem('ticketScanned')
       setIsTicketScanned(false)
+    }
+
+    // If ticket was already scanned in a previous session (page refresh), re-register token
+    if (sessionStorage.getItem('ticketScanned') === 'true') {
+      const existingFlight = getActiveFlight()
+      if (existingFlight) {
+        console.log(`[Main] Session restore: re-registering FCM for flight "${existingFlight}"`)
+        initializePushNotifications(existingFlight).catch(() => {})
+      }
     }
 
     window.addEventListener('aura-open-event', handleOpen)
