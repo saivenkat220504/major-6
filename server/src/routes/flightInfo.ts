@@ -22,7 +22,7 @@ router.post('/register-device', async (req: Request, res: Response) => {
   const rawPlatform = req.body?.platform;
 
   console.log('================================================================================');
-  console.log(`[DeviceRegistration] 📥 [${requestTime}] INCOMING REGISTRATION REQUEST`);
+  console.log(`[DeviceRegistration] 📥 [TOKEN-RECEIVED] [${requestTime}] INCOMING REGISTRATION REQUEST`);
   console.log(`  - Origin: ${req.headers.origin || req.headers.host || 'unknown'}`);
   console.log(`  - User-Agent: ${req.headers['user-agent'] || 'unknown'}`);
   console.log(`  - Client IP: ${req.ip || req.socket.remoteAddress}`);
@@ -52,7 +52,7 @@ router.post('/register-device', async (req: Request, res: Response) => {
     // Query active tokens for this flight to report exact database count
     const activeTokens = await getTokensForFlight(rawFlight);
 
-    console.log(`[DeviceRegistration] 💾 PostgreSQL Upsert SUCCESS:`);
+    console.log(`[DeviceRegistration] 💾 [TOKEN-STORED] PostgreSQL Upsert SUCCESS:`);
     console.log(`  - Canonical Flight Stored: "${subscription.flightNumber}"`);
     console.log(`  - Token Stored (masked): "${maskToken(subscription.token)}"`);
     console.log(`  - Platform: "${subscription.platform}"`);

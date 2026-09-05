@@ -219,7 +219,7 @@ export async function sendPushNotification(
     const messaging = getMessaging(firebaseApp);
     const response = await messaging.sendEachForMulticast(message);
     console.log(
-      `[PushNotificationService] FCM batch sent: ${response.successCount} success, ${response.failureCount} failed (total targets: ${tokens.length})`,
+      `[PushNotificationService] ✅ [DISPATCH-SUCCESS] FCM batch sent: ${response.successCount} success, ${response.failureCount} failed (total targets: ${tokens.length})`,
     );
 
     // Inspect individual token outcomes and clean up dead tokens
@@ -231,7 +231,7 @@ export async function sendPushNotification(
           const errorCode = resp.error?.code || 'unknown_code';
           const errorMessage = resp.error?.message || 'Unknown failure';
           console.warn(
-            `[PushNotificationService] ⚠️ FCM delivery failed for token [${maskToken(tokens[idx])}]: safe_code="${errorCode}", reason="${errorMessage}"`,
+            `[PushNotificationService] ❌ [DISPATCH-FAILURE] FCM delivery failed for token [${maskToken(tokens[idx])}]: safe_code="${errorCode}", reason="${errorMessage}"`,
           );
 
           if (
