@@ -269,7 +269,7 @@ export async function checkFlightChanges(): Promise<{
             const terminalChanged = flightSnapshot.terminal !== currentTerminal;
             const gateChanged = flightSnapshot.gate !== currentGate;
             const arrivalTimeChanged =
-              Boolean(flightSnapshot.arrivalTime) && flightSnapshot.arrivalTime !== currentArrivalTime;
+              flightSnapshot.arrivalTime !== undefined && flightSnapshot.arrivalTime !== currentArrivalTime;
 
             // A1. Terminal or Gate Change Notification
             if (terminalChanged || gateChanged) {
@@ -307,8 +307,9 @@ export async function checkFlightChanges(): Promise<{
             }
 
             // A2. Flight Arrival Time Delay Notification
-            if (arrivalTimeChanged && flightSnapshot.arrivalTime) {
-              const delayInfo = calculateFlightDelay(flightSnapshot.arrivalTime, currentArrivalTime);
+            if (arrivalTimeChanged) {
+              const baseTime = flightSnapshot.arrivalTime || '06:30 PM';
+              const delayInfo = calculateFlightDelay(baseTime, currentArrivalTime);
 
               if (delayInfo) {
                 changesDetected++;
