@@ -101,6 +101,7 @@ export async function getFlightInfo(req: Request, res: Response) {
     const assignedGate = flightRecord?.assignedGate || flightRecord?.assigned_gate || 'Gate 14B';
     const seatAssignment = flightRecord?.seatAssignment || flightRecord?.seat_assignment || '18A';
     const flightDate = flightRecord?.flightDate || flightRecord?.flight_date || '2026-07-16';
+    const arrivalTime = flightRecord?.arrivalTime || flightRecord?.arrival_time || '06:30 PM';
     const flightNumber = flightRecord?.flightNumber || flightRecord?.flight_number || 'AI-102';
 
     return res.json({
@@ -112,10 +113,12 @@ export async function getFlightInfo(req: Request, res: Response) {
         assignedGate,
         seatAssignment,
         flightDate,
+        arrivalTime,
         departure_terminal: departureTerminal,
         assigned_gate: assignedGate,
         seat_assignment: seatAssignment,
         flight_date: flightDate,
+        arrival_time: arrivalTime,
         createdAt: flightRecord?.createdAt || flightRecord?.created_at,
         updatedAt: flightRecord?.updatedAt || flightRecord?.updated_at
       }
@@ -136,14 +139,8 @@ export async function getFlightInfo(req: Request, res: Response) {
  */
 export async function updateFlightInfo(req: Request, res: Response) {
   try {
-    const { flightNumber, departureTerminal, assignedGate, seatAssignment, flightDate } = req.body;
-
-    if (!departureTerminal || !assignedGate || !seatAssignment || !flightDate) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: departureTerminal, assignedGate, seatAssignment, flightDate'
-      });
-    }
+    const { flightNumber, departureTerminal, assignedGate, seatAssignment, flightDate, arrivalTime, arrival_time } = req.body;
+    const targetArrivalTime = arrivalTime || arrival_time;
 
     const targetFlightNumber = (flightNumber || 'AI-102').trim().toUpperCase();
 
@@ -152,32 +149,40 @@ export async function updateFlightInfo(req: Request, res: Response) {
       updatedRecord = await (prisma as any).flightInfo.upsert({
         where: { flightNumber: targetFlightNumber },
         update: {
-          departureTerminal,
-          assignedGate,
-          seatAssignment,
-          flightDate
+          ...(departureTerminal ? { departureTerminal } : {}),
+          ...(assignedGate ? { assignedGate } : {}),
+          ...(seatAssignment ? { seatAssignment } : {}),
+          ...(flightDate ? { flightDate } : {}),
+          ...(targetArrivalTime ? { arrivalTime: targetArrivalTime } : {})
         },
         create: {
           flightNumber: targetFlightNumber,
-          departureTerminal,
-          assignedGate,
-          seatAssignment,
-          flightDate
+          departureTerminal: departureTerminal || 'T1',
+          assignedGate: assignedGate || 'Gate 14B',
+          seatAssignment: seatAssignment || '18A',
+          flightDate: flightDate || '2026-07-16',
+          arrivalTime: targetArrivalTime || '06:30 PM'
         }
       });
     } catch {
       const id = `flight-${Date.now()}`;
       await prisma.$queryRawUnsafe(
-        `INSERT INTO "flight_info" ("id", "flight_number", "departure_terminal", "assigned_gate", "seat_assignment", "flight_date", "created_at", "updated_at")
-         VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+        `INSERT INTO "flight_info" ("id", "flight_number", "departure_terminal", "assigned_gate", "seat_assignment", "flight_date", "arrival_time", "created_at", "updated_at")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
          ON CONFLICT ("flight_number") DO UPDATE 
-         SET "departure_terminal" = $3, "assigned_gate" = $4, "seat_assignment" = $5, "flight_date" = $6, "updated_at" = NOW()`,
+         SET "departure_terminal" = COALESCE($3, "flight_info"."departure_terminal"),
+             "assigned_gate" = COALESCE($4, "flight_info"."assigned_gate"),
+             "seat_assignment" = COALESCE($5, "flight_info"."seat_assignment"),
+             "flight_date" = COALESCE($6, "flight_info"."flight_date"),
+             "arrival_time" = COALESCE($7, "flight_info"."arrival_time"),
+             "updated_at" = NOW()`,
         id,
         targetFlightNumber,
-        departureTerminal,
-        assignedGate,
-        seatAssignment,
-        flightDate
+        departureTerminal || null,
+        assignedGate || null,
+        seatAssignment || null,
+        flightDate || null,
+        targetArrivalTime || null
       );
       const rawRecords: any = await prisma.$queryRawUnsafe(
         `SELECT * FROM "flight_info" WHERE "flight_number" = $1 LIMIT 1`,

@@ -26,6 +26,7 @@ export interface FlightStateSnapshot {
   flightNumber: string;
   terminal: string;
   gate: string;
+  arrivalTime?: string | null;
   recordedAt: string;
 }
 
@@ -297,23 +298,25 @@ export async function getFlightStateSnapshot(
     flightNumber: record.flightNumber,
     terminal: record.terminal,
     gate: record.gate,
+    arrivalTime: record.arrivalTime || (record as any).arrival_time || null,
     recordedAt: record.recordedAt.toISOString(),
   };
 }
 
 /**
- * Persist (upsert) the last-known terminal+gate for a flight.
+ * Persist (upsert) the last-known terminal+gate+arrivalTime for a flight.
  */
 export async function saveFlightStateSnapshot(
   flightNumber: string,
   terminal: string,
   gate: string,
+  arrivalTime?: string | null,
 ): Promise<void> {
   const canonicalFlight = toCanonicalFlightNumber(flightNumber);
   await prisma.flightStateSnapshot.upsert({
     where: { flightNumber: canonicalFlight },
-    update: { terminal, gate },
-    create: { flightNumber: canonicalFlight, terminal, gate },
+    update: { terminal, gate, arrivalTime: arrivalTime ?? null },
+    create: { flightNumber: canonicalFlight, terminal, gate, arrivalTime: arrivalTime ?? null },
   });
 }
 

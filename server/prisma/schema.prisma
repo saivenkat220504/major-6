@@ -140,6 +140,7 @@ model FlightInfo {
   assignedGate      String   @map("assigned_gate")
   seatAssignment    String   @map("seat_assignment")
   flightDate        String   @map("flight_date")
+  arrivalTime       String?  @default("06:30 PM") @map("arrival_time")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
@@ -171,6 +172,7 @@ model FlightStateSnapshot {
   flightNumber String   @id @map("flight_number")
   terminal     String
   gate         String
+  arrivalTime  String?  @map("arrival_time")
   recordedAt   DateTime @default(now()) @map("recorded_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 

@@ -89,6 +89,98 @@ export function isArrivalBeltStatus(status: string): boolean {
 }
 
 /**
+ * Parse time string into total minutes from midnight.
+ * Supports formats:
+ * - "06:30 PM", "6:30PM", "08:15 AM"
+ * - "18:30", "08:15"
+ * - ISO date/time strings
+ */
+export function parseTimeToMinutes(timeStr: string): number | null {
+  if (!timeStr || !timeStr.trim()) return null;
+  const str = timeStr.trim();
+
+  // 12-hour format: "06:30 PM", "6:30PM", "8:15 AM"
+  const match12 = str.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (match12) {
+    let hrs = parseInt(match12[1], 10);
+    const mins = parseInt(match12[2], 10);
+    const period = match12[3].toUpperCase();
+    if (period === 'PM' && hrs < 12) hrs += 12;
+    if (period === 'AM' && hrs === 12) hrs = 0;
+    return hrs * 60 + mins;
+  }
+
+  // 24-hour format: "18:30", "08:15"
+  const match24 = str.match(/^(\d{1,2}):(\d{2})$/);
+  if (match24) {
+    const hrs = parseInt(match24[1], 10);
+    const mins = parseInt(match24[2], 10);
+    return hrs * 60 + mins;
+  }
+
+  // ISO Date parse fallback
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+
+  return null;
+}
+
+/**
+ * Format total minutes as standard 12-hour AM/PM string (e.g. 1110 -> "06:30 PM", 1230 -> "08:30 PM")
+ */
+export function formatMinutesToAmPm(totalMinutes: number): string {
+  let hrs = Math.floor(totalMinutes / 60) % 24;
+  const mins = totalMinutes % 60;
+  const period = hrs >= 12 ? 'PM' : 'AM';
+  hrs = hrs % 12;
+  if (hrs === 0) hrs = 12;
+  const hh = String(hrs).padStart(2, '0');
+  const mm = String(mins).padStart(2, '0');
+  return `${hh}:${mm} ${period}`;
+}
+
+/**
+ * Calculate dynamic delay string XYZ and new time string PQRS from old and new time.
+ * Allows ANY positive delay (>0). Rejects non-positive (<=0) or invalid updates.
+ */
+export function calculateFlightDelay(
+  oldTimeStr: string,
+  newTimeStr: string,
+): { delayMinutes: number; delayString: string; newFormattedTime: string } | null {
+  const oldMins = parseTimeToMinutes(oldTimeStr);
+  const newMins = parseTimeToMinutes(newTimeStr);
+
+  if (oldMins === null || newMins === null) return null;
+
+  let diffMins = newMins - oldMins;
+  // Handle midnight wrap-around (e.g. 23:00 to 01:00)
+  if (diffMins < 0) {
+    diffMins += 24 * 60;
+  }
+
+  // Allow only positive delay (> 0). Reject non-positive or earlier updates.
+  if (diffMins <= 0) return null;
+
+  let delayString: string;
+  if (diffMins % 60 === 0) {
+    const hrs = diffMins / 60;
+    delayString = hrs === 1 ? '1 hour' : `${hrs} hours`;
+  } else if (diffMins > 60) {
+    const hrs = Math.floor(diffMins / 60);
+    const mins = diffMins % 60;
+    delayString = `${hrs} hour${hrs > 1 ? 's' : ''} ${mins} mins`;
+  } else {
+    delayString = `${diffMins} mins`;
+  }
+
+  const newFormattedTime = formatMinutesToAmPm(newMins);
+
+  return { delayMinutes: diffMins, delayString, newFormattedTime };
+}
+
+/**
  * Single iteration: read flight_info and baggage_tracking rows for registered flights,
  * compare each against the persisted snapshots in PostgreSQL, dispatch real FCM
  * notifications for changes, and update baseline snapshots in PostgreSQL.
@@ -135,7 +227,7 @@ export async function checkFlightChanges(): Promise<{
 
       const variants = getFlightNumberVariants(watchedFlight);
 
-      // ─── A. FLIGHT INFO GATE & TERMINAL WATCHER ─────────────────────────
+      // ─── A. FLIGHT INFO GATE, TERMINAL & DELAY WATCHER ───────────────────
       let flightRecord: any = null;
 
       try {
@@ -161,19 +253,25 @@ export async function checkFlightChanges(): Promise<{
           flightRecord.departureTerminal || flightRecord.departure_terminal || ''
         ).trim();
         const currentGate = (flightRecord.assignedGate || flightRecord.assigned_gate || '').trim();
+        const currentArrivalTime = (
+          flightRecord.arrivalTime || flightRecord.arrival_time || '06:30 PM'
+        ).trim();
 
-        if (currentTerminal || currentGate) {
+        if (currentTerminal || currentGate || currentArrivalTime) {
           const flightSnapshot = await getFlightStateSnapshot(watchedFlight);
 
           if (!flightSnapshot) {
-            await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
+            await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate, currentArrivalTime);
             console.log(
-              `[FlightWatcher] Initialized baseline for flight "${watchedFlight}": terminal="${currentTerminal}", gate="${currentGate}"`,
+              `[FlightWatcher] Initialized baseline for flight "${watchedFlight}": terminal="${currentTerminal}", gate="${currentGate}", arrivalTime="${currentArrivalTime}"`,
             );
           } else {
             const terminalChanged = flightSnapshot.terminal !== currentTerminal;
             const gateChanged = flightSnapshot.gate !== currentGate;
+            const arrivalTimeChanged =
+              Boolean(flightSnapshot.arrivalTime) && flightSnapshot.arrivalTime !== currentArrivalTime;
 
+            // A1. Terminal or Gate Change Notification
             if (terminalChanged || gateChanged) {
               changesDetected++;
               console.log(
@@ -199,12 +297,62 @@ export async function checkFlightChanges(): Promise<{
                 });
 
                 if (result.successCount > 0 || result.mocked) {
-                  await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate);
+                  await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate, currentArrivalTime);
                   notificationsSent += result.successCount;
                   console.log(
                     `[FlightWatcher] FCM delivered to ${result.successCount}/${tokens.length} registered device(s) for flight "${watchedFlight}".`,
                   );
                 }
+              }
+            }
+
+            // A2. Flight Arrival Time Delay Notification
+            if (arrivalTimeChanged && flightSnapshot.arrivalTime) {
+              const delayInfo = calculateFlightDelay(flightSnapshot.arrivalTime, currentArrivalTime);
+
+              if (delayInfo) {
+                changesDetected++;
+                // Required exact format: "Your flight is delayed by XYZ. The new arrival time is PQRS. We request you to cooperate with us."
+                const delayBody = `Your flight is delayed by ${delayInfo.delayString}. The new arrival time is ${delayInfo.newFormattedTime}. We request you to cooperate with us.`;
+
+                console.log(
+                  `[Flow] Triggered flight delay notification: "${watchedFlight}" (Arrival: "${flightSnapshot.arrivalTime}" → "${currentArrivalTime}", Delay: ${delayInfo.delayString})`,
+                );
+                console.log(`[Flow] Delay message: "${delayBody}"`);
+
+                const tokens = await getTokensForFlight(watchedFlight);
+                if (tokens.length > 0) {
+                  const result = await sendPushNotification(tokens, {
+                    title: 'Flight Delay Alert',
+                    body: delayBody,
+                    data: {
+                      flightNumber: watchedFlight,
+                      terminal: currentTerminal,
+                      gate: currentGate,
+                      arrivalTime: currentArrivalTime,
+                      delayMinutes: String(delayInfo.delayMinutes),
+                      type: 'FLIGHT_DELAY',
+                    },
+                  });
+
+                  if (result.successCount > 0 || result.mocked) {
+                    await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate, currentArrivalTime);
+                    notificationsSent += result.successCount;
+                    console.log(
+                      `[FlightWatcher] ✅ Flight delay notification delivered to ${result.successCount}/${tokens.length} device(s) for flight "${watchedFlight}".`,
+                    );
+                  } else {
+                    console.warn(
+                      `[FlightWatcher] ⚠️ FCM dispatch failed for flight delay "${watchedFlight}". Snapshot not advanced; will retry on next iteration.`,
+                    );
+                  }
+                }
+              } else {
+                // Non-positive or invalid delay update (earlier arrival / same time) — update baseline without notification
+                await saveFlightStateSnapshot(watchedFlight, currentTerminal, currentGate, currentArrivalTime);
+                console.log(
+                  `[FlightWatcher] Baseline updated for "${watchedFlight}" to "${currentArrivalTime}" (non-positive delay, no push sent).`,
+                );
               }
             }
           }
