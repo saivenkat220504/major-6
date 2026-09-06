@@ -1,4 +1,5 @@
 import express from 'express';
+import prisma from './prisma/client';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
@@ -69,10 +70,7 @@ const io = new Server(httpServer, {
 });
 
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-  });
+  socket.on('disconnect', () => {});
 });
 
 // ── Telegram → Prisma wiring ───────────────────────────────────────────────────
@@ -137,8 +135,28 @@ startTelegramLongPolling(
   },
 );
 
-httpServer.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on ${PORT}`);
-  // Start database change watcher daemon for flight tracking
+async function runStartupMigrations(): Promise<void> {
+  try {
+    // Ensure arrival_time column exists on flight_state_snapshots (Render production fix)
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE flight_state_snapshots
+      ADD COLUMN IF NOT EXISTS arrival_time TEXT;
+    `);
+    // Ensure arrival_time column exists on flight_info
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE flight_info
+      ADD COLUMN IF NOT EXISTS arrival_time TEXT DEFAULT '06:30 PM';
+    `);
+    console.log('[Startup] ✅ DB schema columns verified (arrival_time present on both tables).');
+  } catch (err: any) {
+    console.error('[Startup] ⚠️ Migration check failed (non-fatal):', err.message);
+  }
+}
+
+httpServer.listen(PORT, '0.0.0.0', async () => {
+  console.log(`[Startup] Server listening on port ${PORT}`);
+  await runStartupMigrations();
+  // Start database change watcher daemon for flight/baggage tracking
   startFlightChangeWatcher(3000);
+  console.log('[Startup] ✅ Flight & baggage change watcher started (3s interval).');
 });

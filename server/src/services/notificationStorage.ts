@@ -120,7 +120,6 @@ export function toCanonicalFlightNumber(flightNumber: string): string {
   if (!flightNumber) return '';
 
   const raw = flightNumber.trim().toUpperCase();
-  console.log(`[FlightNorm] Raw input: "${raw}"`);
 
   // Step 1: Strip ICAO prefixes
   const deIcao = stripIcaoPrefix(raw);
@@ -129,9 +128,6 @@ export function toCanonicalFlightNumber(flightNumber: string): string {
   const match = deIcao.match(/^([A-Z]{2,3}|[A-Z0-9]{2})[\s\-_]*([0-9]+)$/);
   if (match) {
     const canonical = `${match[1]}-${match[2]}`;
-    if (canonical !== raw) {
-      console.log(`[FlightNorm] ✅ Canonical: "${raw}" → "${canonical}"`);
-    }
     return canonical;
   }
 
@@ -206,7 +202,7 @@ export async function registerDeviceToken(
   });
 
   console.log(
-    `[Flow] Stored flight in PostgreSQL: "${canonicalFlight}" for device [${maskToken(token)}]`,
+    `[Flow] Registered device for flight "${canonicalFlight}" → [${maskToken(token)}]`,
   );
 
   return {
@@ -230,10 +226,6 @@ export async function getTokensForFlight(flightNumber: string): Promise<string[]
     },
     select: { deviceToken: true, flightNumber: true },
   });
-
-  console.log(
-    `[NotificationStorage] PostgreSQL lookup for flight "${flightNumber}" (variants: [${variants.join(', ')}]) returned ${records.length} record(s)`,
-  );
 
   const seen = new Set<string>();
   const tokens: string[] = [];
