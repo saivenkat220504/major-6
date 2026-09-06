@@ -1,14 +1,50 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { motion } from 'framer-motion'
-import { ArrowLeft, Siren, MapPin, Loader, ShieldCheck, ShieldAlert, Radio, Clock, PhoneCall } from 'lucide-react'
+import { ArrowLeft, Siren, Phone, ShieldAlert, Loader, MapPin, X } from 'lucide-react'
+import { Geolocation } from '@capacitor/geolocation'
 import EmergencyNotice from '../components/EmergencyNotice'
-import CategorizedEmergencySelector from '../components/CategorizedEmergencySelector'
 import AlertConfirmationDashboard from '../components/AlertConfirmationDashboard'
-import { EmergencyReasonItem, EMERGENCY_REASONS } from '../data/emergencyCategories'
 
 const ALERT_SENT_KEY = 'emergencyAlertSent_v2'
 const ALERT_DATA_KEY = 'emergencyAlertData_v2'
+
+interface EmergencyContactCard {
+  id: string
+  title: string
+  subtitle?: string
+  phone: string
+  hasSos: boolean
+  category: 'Medical' | 'Police' | 'Operations'
+  primaryAgency: string
+}
+
+const EMERGENCY_CONTACTS: EmergencyContactCard[] = [
+  {
+    id: 'medical_apollo',
+    title: 'Medical Emergency',
+    subtitle: 'Apollo',
+    phone: '1066',
+    hasSos: true,
+    category: 'Medical',
+    primaryAgency: 'medical',
+  },
+  {
+    id: 'police',
+    title: 'Police',
+    phone: '112',
+    hasSos: true,
+    category: 'Police',
+    primaryAgency: 'police',
+  },
+  {
+    id: 'baggage_misplaced',
+    title: 'Baggage Misplaced',
+    phone: '+91 40 6660 6660',
+    hasSos: false,
+    category: 'Operations',
+    primaryAgency: 'operations',
+  },
+]
 
 type Status = 'idle' | 'locating' | 'sending' | 'error'
 
@@ -19,9 +55,12 @@ export default function EmergencyContactPage() {
     () => sessionStorage.getItem(ALERT_SENT_KEY) === 'true'
   )
 
-  const [selectedReason, setSelectedReason] = useState<EmergencyReasonItem | null>(null)
+  const [activeContact, setActiveContact] = useState<EmergencyContactCard | null>(null)
   const [status, setStatus] = useState<Status>('idle')
   const [errorMsg, setErrorMsg] = useState('')
+  const [showLocationDialog, setShowLocationDialog] = useState(false)
+  const [pendingContact, setPendingContact] = useState<EmergencyContactCard | null>(null)
+
   const [alertData, setAlertData] = useState<any>(() => {
     try {
       const raw = sessionStorage.getItem(ALERT_DATA_KEY)
@@ -40,80 +79,114 @@ export default function EmergencyContactPage() {
     }
   }
 
-  const handleEmergencyAlert = async () => {
-    if (!selectedReason || isLoading) return
+  // Dial handler: opens phone dial keypad with prefilled number
+  const handleDial = (phone: string) => {
+    const cleanNumber = phone.replace(/\s+/g, '')
+    window.location.href = `tel:${cleanNumber}`
+  }
 
+  // Step 1: User clicks main card "SOS" button -> Directly open location dialog
+  const handleSosClick = (contact: EmergencyContactCard) => {
+    setErrorMsg('')
+    setPendingContact(contact)
+    setActiveContact(contact)
+    setShowLocationDialog(true)
+  }
+
+  // Step 2: User clicks the red broadcast button inside the dialog -> extract REAL location using Capacitor native GPS
+  const handleConfirmLocationAndSendSos = async () => {
+    if (!pendingContact) return
+
+    const contact = pendingContact
     setStatus('locating')
     setErrorMsg('')
 
-    if (!navigator.geolocation) {
-      setErrorMsg('Live location is not supported by this browser.')
-      setStatus('error')
-      return
-    }
+    let lat: number
+    let lng: number
+    let accuracy: number | null = null
 
-    let position: GeolocationPosition
     try {
-      position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          reject,
-          {
-            enableHighAccuracy: true,
-            timeout: 15000,
-            maximumAge: 0,
-          }
-        )
-      })
-    } catch (err: any) {
-      let msg = 'Live location could not be obtained. Please try again.'
-      if (err?.code === 1 || err?.code === err?.PERMISSION_DENIED) {
-        msg = 'Location permission is required to share your live location. Please allow location access and try again.'
-      } else if (err?.code === 2 || err?.code === err?.POSITION_UNAVAILABLE) {
-        msg = 'Your current location could not be detected. Please check your device location settings and try again.'
-      } else if (err?.code === 3 || err?.code === err?.TIMEOUT) {
-        msg = 'Live location could not be obtained in time. Please try again.'
+      // First, check & request native permissions via Capacitor
+      let permStatus = await Geolocation.checkPermissions()
+
+      if (permStatus.location === 'denied') {
+        // Permission was previously denied — ask once more
+        permStatus = await Geolocation.requestPermissions()
       }
-      setErrorMsg(msg)
+
+      if (permStatus.location === 'denied') {
+        setShowLocationDialog(false)
+        setStatus('error')
+        setErrorMsg('Location permission denied. Please go to phone Settings > Apps > Smart Airport > Permissions and enable Location access.')
+        return
+      }
+
+      // Extract REAL position from native GPS — NO fallback, NO dummy data
+      const position = await Geolocation.getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 15000,
+      })
+
+      lat = position.coords.latitude
+      lng = position.coords.longitude
+      accuracy = position.coords.accuracy || null
+
+      // Safety: reject obviously invalid coordinates
+      if (lat === 0 && lng === 0) {
+        throw new Error('GPS returned (0, 0) which indicates device GPS is not ready. Please wait a moment and try again.')
+      }
+
+    } catch (err: any) {
+      console.warn('[Capacitor Location Extractor Error]:', err)
+      setShowLocationDialog(false)
       setStatus('error')
+
+      const msg = err?.message || ''
+
+      if (msg.includes('denied') || msg.includes('permission')) {
+        setErrorMsg('Location permission denied. Please go to phone Settings > Apps > Smart Airport > Permissions and enable Location access.')
+      } else if (msg.includes('disabled') || msg.includes('turned off') || msg.includes('location service')) {
+        setErrorMsg('Please turn on live location / GPS on your phone from the Settings.')
+      } else if (msg.includes('timeout') || msg.includes('timed out')) {
+        setErrorMsg('System error: Location request timed out. Please check your GPS signal and try again.')
+      } else {
+        setErrorMsg(`System error extracting location: ${msg || 'Unknown error'}`)
+      }
       return
     }
 
-    const { latitude, longitude, accuracy } = position.coords
+    setShowLocationDialog(false)
+    await dispatchSos(contact, lat, lng, accuracy)
+  }
 
-    // Validate coordinates
-    if (
-      typeof latitude !== 'number' ||
-      typeof longitude !== 'number' ||
-      !Number.isFinite(latitude) ||
-      !Number.isFinite(longitude) ||
-      latitude < -90 ||
-      latitude > 90 ||
-      longitude < -180 ||
-      longitude > 180
-    ) {
-      setErrorMsg('Detected coordinates are invalid. Please check your GPS and try again.')
-      setStatus('error')
-      return
-    }
+  const dispatchSos = async (
+    contact: EmergencyContactCard,
+    latitude: number,
+    longitude: number,
+    accuracy: number | null
+  ) => {
+    setStatus('sending')
+    setErrorMsg('')
 
     const boarding = getBoardingData()
-    setStatus('sending')
+    const fullReasonLabel = contact.subtitle
+      ? `${contact.title} — ${contact.subtitle}`
+      : contact.title
 
     try {
       const payload = {
         passengerName: boarding?.passenger_name ?? 'Sai Venkat',
         ticketId: boarding?.ticket_id ?? '3409967503',
-        emergencyType: selectedReason.label,
-        category: selectedReason.category,
-        primaryAgency: selectedReason.primaryAgency,
-        additionalAgencies: selectedReason.additionalAgencies,
-        priority: selectedReason.priority,
+        emergencyType: fullReasonLabel,
+        category: contact.category,
+        primaryAgency: contact.primaryAgency,
+        additionalAgencies: [],
+        priority: 'CRITICAL',
         latitude,
         longitude,
-        accuracy: typeof accuracy === 'number' && Number.isFinite(accuracy) ? accuracy : null,
+        accuracy,
         terminal: boarding?.terminal || 'Terminal 3',
-        timestamp: new Date(position.timestamp || Date.now()).toISOString(),
+        timestamp: new Date().toISOString(),
       }
 
       const response = await fetch('/api/emergency-alert', {
@@ -127,8 +200,17 @@ export default function EmergencyContactPage() {
         throw new Error(errorData.error || `Server responded with status ${response.status}`)
       }
 
+      const savedReasonItem = {
+        id: contact.id,
+        label: fullReasonLabel,
+        category: contact.category,
+        primaryAgency: contact.primaryAgency,
+        additionalAgencies: [],
+        priority: 'CRITICAL',
+      }
+
       const savedData = {
-        reason: selectedReason,
+        reason: savedReasonItem,
         latitude,
         longitude,
         passengerName: payload.passengerName,
@@ -143,7 +225,7 @@ export default function EmergencyContactPage() {
       setAlertSent(true)
       setStatus('idle')
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to dispatch emergency alert. Please try again.')
+      setErrorMsg(err.message || 'System error: Failed to dispatch emergency alert. Please try again.')
       setStatus('error')
     }
   }
@@ -154,11 +236,10 @@ export default function EmergencyContactPage() {
     setAlertSent(false)
     setAlertData(null)
     setStatus('idle')
-    setSelectedReason(null)
+    setActiveContact(null)
   }
 
   const isLoading = status === 'locating' || status === 'sending'
-  const canSend = !!selectedReason && !isLoading
 
   if (alertSent && alertData?.reason) {
     return (
@@ -173,23 +254,6 @@ export default function EmergencyContactPage() {
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleResetAlert}
-              className="px-4 py-2 rounded-xl bg-red-500/20 text-red-300 border border-red-500/30 font-bold text-xs flex items-center gap-1.5"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Resolve & Dismiss Alert</span>
-            </button>
-            <button
-              onClick={() => navigate('/emergency-contact/staff-dashboard')}
-              className="px-4 py-2 rounded-xl bg-blue-500/20 text-[#14C8FF] border border-blue-400/30 font-bold text-xs flex items-center gap-1.5"
-            >
-              <Radio className="w-4 h-4 animate-pulse" />
-              <span>Staff Portal</span>
-            </button>
-          </div>
         </div>
 
         <AlertConfirmationDashboard
@@ -208,70 +272,140 @@ export default function EmergencyContactPage() {
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div className="p-6 rounded-[28px] bg-[#0F1E35] border border-white/10 shadow-xl flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate('/')}
-            className="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-[#94A3B8] hover:text-[#F8FAFC] transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-widest text-[#EF4444] flex items-center gap-1">
-              <Siren className="w-3.5 h-3.5 animate-pulse" />
-              Multi-Agency Emergency Response
-            </span>
-            <h1 className="text-2xl font-black text-[#F8FAFC]">Airport Security & Dispatch Platform</h1>
-          </div>
-        </div>
-
+      <div className="p-6 rounded-[28px] bg-[#0F1E35] border border-white/10 shadow-xl flex items-center gap-4">
         <button
-          onClick={() => navigate('/emergency-contact/staff-dashboard')}
-          className="px-4 py-2 rounded-xl bg-blue-500/20 text-[#14C8FF] border border-blue-400/30 font-bold text-xs flex items-center gap-1.5"
+          onClick={() => navigate('/')}
+          className="w-10 h-10 rounded-2xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-[#94A3B8] hover:text-[#F8FAFC] transition-colors"
         >
-          <Radio className="w-4 h-4 animate-pulse" />
-          <span>Staff Dashboard</span>
+          <ArrowLeft className="w-5 h-5" />
         </button>
+        <div>
+          <span className="text-[10px] font-bold uppercase tracking-widest text-[#EF4444] flex items-center gap-1">
+            <Siren className="w-3.5 h-3.5 animate-pulse" />
+            Emergency Services
+          </span>
+          <h1 className="text-2xl font-black text-[#F8FAFC]">Emergency Contacts</h1>
+        </div>
       </div>
 
+      {/* Emergency Alert Notice Board (Preserved exactly) */}
       <EmergencyNotice />
 
-      <div className="p-6 rounded-[28px] bg-[#0F1E35] border border-white/10 shadow-xl space-y-6">
-        <CategorizedEmergencySelector
-          selectedReason={selectedReason}
-          onSelectReason={(r) => setSelectedReason(r)}
-        />
+      {/* Emergency Contacts Section */}
+      <div className="p-6 rounded-[28px] bg-[#0F1E35] border border-white/10 shadow-xl space-y-4">
+        <h2 className="text-base font-extrabold text-[#F8FAFC] tracking-wide mb-2">
+          Emergency Contacts
+        </h2>
 
         {errorMsg && (
-          <div className="p-4 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-start gap-3 text-red-300 text-xs font-semibold animate-in fade-in duration-200">
+          <div className="p-4 rounded-2xl bg-red-500/15 border border-red-500/40 flex items-start gap-3 text-red-300 text-xs font-semibold animate-in fade-in duration-200">
             <ShieldAlert className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-bold text-red-200">{errorMsg}</p>
-              <p className="text-[11px] text-red-300/80">Please check your location settings/permissions and click Broadcast again to retry.</p>
             </div>
           </div>
         )}
 
-        <button
-          id="emergency-alert-btn"
-          onClick={handleEmergencyAlert}
-          disabled={!canSend}
-          className={`w-full py-4 flex items-center justify-center gap-3 font-extrabold text-base rounded-[18px] shadow-2xl transition-all ${
-            canSend
-              ? 'bg-[#EF4444] hover:bg-red-600 text-white shadow-red-500/30 active:scale-[0.98]'
-              : 'bg-white/5 text-[#94A3B8]/40 border border-white/5 cursor-not-allowed'
-          }`}
-        >
-          {isLoading ? <Loader className="w-5 h-5 animate-spin" /> : <Siren className="w-5 h-5" />}
-          <span>
-            {status === 'locating'
-              ? 'Getting your live location...'
-              : status === 'sending'
-              ? 'Dispatching Emergency Alert...'
-              : 'Broadcast Multi-Agency Emergency Alert'}
-          </span>
-        </button>
+        <div className="space-y-3">
+          {EMERGENCY_CONTACTS.map((c) => (
+            <div
+              key={c.id}
+              className="p-4 rounded-2xl bg-[#162742] border border-white/10 flex items-center justify-between gap-3 shadow-md hover:border-white/20 transition-all"
+            >
+              {/* Left Info */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-black text-[#F8FAFC] truncate">
+                    {c.title}
+                  </h3>
+                  {c.subtitle && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-[#14C8FF] border border-cyan-500/30">
+                      {c.subtitle}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm font-semibold text-[#94A3B8] mt-0.5">
+                  {c.phone}
+                </p>
+              </div>
+
+              {/* Right Actions: Dial Icon & optional SOS */}
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Blue Dial Icon */}
+                <button
+                  onClick={() => handleDial(c.phone)}
+                  title={`Dial ${c.phone}`}
+                  className="w-11 h-11 rounded-xl bg-cyan-500/20 hover:bg-cyan-500/30 text-[#14C8FF] border border-cyan-400/40 flex items-center justify-center transition-all active:scale-95"
+                >
+                  <Phone className="w-5 h-5" />
+                </button>
+
+                {/* Red SOS Button (Only for Medical & Police) */}
+                {c.hasSos && (
+                  <button
+                    onClick={() => handleSosClick(c)}
+                    disabled={isLoading}
+                    className="px-4 py-2.5 rounded-xl bg-[#EF4444] hover:bg-red-600 active:scale-95 text-white font-black text-xs tracking-wider shadow-lg shadow-red-500/30 flex items-center gap-1.5 transition-all disabled:opacity-50"
+                  >
+                    {isLoading && activeContact?.id === c.id ? (
+                      <Loader className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Siren className="w-4 h-4 animate-pulse" />
+                    )}
+                    <span>SOS</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
+
+      {/* Location Dialog Modal */}
+      {showLocationDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="w-full max-w-sm p-6 rounded-[24px] bg-[#0F1E35] border border-white/20 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-amber-400 font-extrabold text-base">
+                <MapPin className="w-5 h-5" />
+                <span>Enable Live Location</span>
+              </div>
+              <button
+                onClick={() => setShowLocationDialog(false)}
+                className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs font-semibold text-slate-300 leading-relaxed">
+              Please turn on your live location and click on the below red button to dispatch your emergency alert.
+            </p>
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button
+                onClick={handleConfirmLocationAndSendSos}
+                disabled={isLoading}
+                className="w-full py-3 rounded-xl bg-[#EF4444] hover:bg-red-600 active:scale-95 text-white font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg transition-all"
+              >
+                {isLoading ? (
+                  <Loader className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Siren className="w-4 h-4" />
+                )}
+                <span>Send Emergency SOS Alert</span>
+              </button>
+
+              <button
+                onClick={() => setShowLocationDialog(false)}
+                className="w-full py-2.5 rounded-xl bg-white/10 text-slate-300 font-bold text-xs"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

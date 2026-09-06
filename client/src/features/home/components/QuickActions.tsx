@@ -12,7 +12,7 @@ import {
   Wifi,
   HeartPulse,
   Languages,
-  CalendarClock,
+  Accessibility,
 } from 'lucide-react'
 
 interface ServiceCard {
@@ -157,20 +157,20 @@ const PASSENGER_SERVICES: ServiceCard[] = [
     accentGlow: 'shadow-indigo-500/10',
   },
   {
-    id: 'event-scheduler',
-    title: 'Event Scheduler',
-    description: 'Schedule reminders for boarding, check-in & airport events',
-    status: 'Local Notifications',
-    statusColor: 'text-pink-400',
-    statusDot: 'bg-pink-400 animate-pulse',
-    metric: 'Browser Alerts',
-    metricColor: 'text-pink-300',
-    icon: CalendarClock,
-    iconBg: 'bg-pink-500/15',
-    iconColor: 'text-pink-400',
-    borderHover: 'hover:border-pink-400/40',
-    path: '/event-scheduler',
-    accentGlow: 'shadow-pink-500/10',
+    id: 'disability-assistance',
+    title: 'Disability Assistance',
+    description: 'Wheelchair mobility and companion support for passengers with disabilities',
+    status: 'Airport Staff • Live',
+    statusColor: 'text-emerald-400',
+    statusDot: 'bg-emerald-400 animate-pulse',
+    metric: 'Priority Care',
+    metricColor: 'text-emerald-300',
+    icon: Accessibility,
+    iconBg: 'bg-emerald-500/15',
+    iconColor: 'text-emerald-400',
+    borderHover: 'hover:border-emerald-400/40',
+    path: '/disability-assistance',
+    accentGlow: 'shadow-emerald-500/10',
   },
 ]
 

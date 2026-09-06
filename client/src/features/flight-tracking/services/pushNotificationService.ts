@@ -241,17 +241,17 @@ export async function initializePushNotifications(flightNumber: string): Promise
     }
 
     // 2. Android Notification Channel (Oreo / Android 8+)
-    console.log('[PushRegistration] [Step 2] Creating notification channel "flight_alerts_v2" (Importance High, Sound, Vibration)...');
+    console.log('[PushRegistration] [Step 2] Creating notification channel "flight_alerts_v3" (Importance High, Sound, Vibration)...');
     await PushNotifications.createChannel({
-      id: 'flight_alerts_v2',
-      name: 'Flight Alerts',
-      description: 'Real-time gate and terminal change alerts for your flight',
+      id: 'flight_alerts_v3',
+      name: 'Flight & Baggage Alerts',
+      description: 'Real-time gate, terminal, and baggage arrival alerts for your flight',
       importance: 5, // IMPORTANCE_HIGH (heads-up popup, plays sound, vibrates)
       visibility: 1, // VISIBILITY_PUBLIC (shows on lock screen)
       sound: 'default',
       vibration: true,
     });
-    console.log('[PushRegistration] [Step 2] Notification channel created successfully.');
+    console.log('[PushRegistration] [Step 2] Notification channel flight_alerts_v3 created successfully.');
 
     // 3. Immediately register existing cached token if available
     const cached = localStorage.getItem(FCM_STORAGE_KEY);
@@ -279,6 +279,15 @@ export async function initializePushNotifications(flightNumber: string): Promise
 
       PushNotifications.addListener('registrationError', (error: any) => {
         console.error('[PushRegistration] ❌ [Step 4 ERROR] FCM Native Registration Error:', error);
+      });
+
+      PushNotifications.addListener('pushNotificationReceived', (notification: any) => {
+        console.log('================================================================');
+        console.log('[PushRegistration] 🔔 FOREGROUND FCM NOTIFICATION RECEIVED ON DEVICE:');
+        console.log(`  - Title : "${notification.title}"`);
+        console.log(`  - Body  : "${notification.body}"`);
+        console.log(`  - Data  :`, notification.data);
+        console.log('================================================================');
       });
 
       PushNotifications.addListener('actionPerformed', (action: ActionPerformed) => {

@@ -30,10 +30,12 @@ export interface FlightInfoData {
   assignedGate: string
   seatAssignment: string
   flightDate: string
+  arrivalTime?: string
   departure_terminal?: string
   assigned_gate?: string
   seat_assignment?: string
   flight_date?: string
+  arrival_time?: string
   createdAt?: string
   updatedAt?: string
 }
@@ -73,12 +75,13 @@ const STATUS_CONFIG: Record<
 export default function FlightTrackingPage() {
   const navigate = useNavigate()
   const [boardingData, setBoardingData] = useState<BoardingData | null>(null)
-  const [currentStatus] = useState<FlightStatusType>('boarding_soon')
+  const [currentStatus, setCurrentStatus] = useState<FlightStatusType>('boarding_soon')
   
   // Database-backed Flight Information State
   const [flightInfo, setFlightInfo] = useState<FlightInfoData | null>(null)
   const [loading, setLoading] = useState<boolean>(true)
   const [error, setError] = useState<string | null>(null)
+  const [delayMinutes, setDelayMinutes] = useState<number>(0)
 
   const fetchFlightData = async () => {
     try {
@@ -109,6 +112,30 @@ export default function FlightTrackingPage() {
       const json = await response.json()
       if (json.success && json.data) {
         setFlightInfo(json.data)
+
+        // Calculate dynamic delay minutes if arrival time has been updated beyond default 06:30 PM
+        const arrTime = json.data.arrivalTime || json.data.arrival_time || '06:30 PM'
+        const baseMins = 18 * 60 + 30 // 06:30 PM in minutes (1110)
+        
+        // Parse current arrival time
+        let currMins: number | null = null;
+        const match12 = String(arrTime).match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+        if (match12) {
+          let hrs = parseInt(match12[1], 10);
+          const mins = parseInt(match12[2], 10);
+          const period = match12[3].toUpperCase();
+          if (period === 'PM' && hrs < 12) hrs += 12;
+          if (period === 'AM' && hrs === 12) hrs = 0;
+          currMins = hrs * 60 + mins;
+        }
+
+        if (currMins !== null && currMins > baseMins) {
+          const diff = currMins - baseMins
+          setDelayMinutes(diff)
+          setCurrentStatus('delayed')
+        } else {
+          setDelayMinutes(0)
+        }
       } else {
         throw new Error(json.error || 'Invalid flight info response from database')
       }
@@ -138,6 +165,7 @@ export default function FlightTrackingPage() {
   const assignedGate = flightInfo?.assignedGate || flightInfo?.assigned_gate
   const seatAssignment = flightInfo?.seatAssignment || flightInfo?.seat_assignment
   const flightDate = flightInfo?.flightDate || flightInfo?.flight_date
+  const arrivalTime = flightInfo?.arrivalTime || flightInfo?.arrival_time || '06:30 PM'
   const flightNumber = boardingData?.flight_id || flightInfo?.flightNumber || '---'
 
   const statusInfo = STATUS_CONFIG[currentStatus]
@@ -174,7 +202,7 @@ export default function FlightTrackingPage() {
       </div>
 
       {/* SECTION 1: Circular Boarding Countdown & Progress */}
-      <FlightCountdown />
+      <FlightCountdown delayMinutes={delayMinutes} />
 
       {/* Error state banner if backend call fails */}
       {error && (
@@ -208,7 +236,7 @@ export default function FlightTrackingPage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             {/* 1. Departure Terminal */}
             <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
               <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Departure Terminal</div>
@@ -253,6 +281,18 @@ export default function FlightTrackingPage() {
                   <span className="animate-pulse text-[#64748B]">Loading...</span>
                 ) : (
                   flightDate || '—'
+                )}
+              </div>
+            </div>
+
+            {/* 5. Scheduled Arrival Time */}
+            <div className="p-3 rounded-2xl bg-[#162742] border border-white/5">
+              <div className="text-[10px] text-[#94A3B8] uppercase font-bold">Scheduled Arrival</div>
+              <div className="text-base font-extrabold text-amber-300 mt-0.5">
+                {loading ? (
+                  <span className="animate-pulse text-[#64748B]">Loading...</span>
+                ) : (
+                  arrivalTime || '—'
                 )}
               </div>
             </div>

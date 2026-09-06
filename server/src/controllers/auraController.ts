@@ -150,7 +150,7 @@ AGENT AUTHORITY & PERMISSION MODEL
    - "open_translation": For real-time voice translation across languages.
    - "open_boarding_pass": For viewing digital boarding pass.
    - "open_profile": For passenger profile.
-   - "open_event_scheduler": For boarding alarms or reminders. Pre-fill event_name and event_time if provided.
+   - "open_disability_assistance": For wheelchair support or staff companion disability assistance.
 
 4. FORBIDDEN ACTIONS (Never allowed):
    - Never broadcast emergency alerts autonomously.
@@ -174,12 +174,10 @@ RESPONSE FORMAT
 ================================================================================
 You MUST respond with a JSON object with this exact shape:
 {
-  "matched_intent": "find_route" | "check_baggage_status" | "guide_verify_bag" | "get_flight_info" | "guide_live_flight_location" | "open_transit_hub" | "open_meal_delivery" | "open_emergency_contact" | "open_personal_guardian" | "open_translation" | "open_boarding_pass" | "open_profile" | "open_event_scheduler" | "airport_info" | "irrelevant" | "none",
+  "matched_intent": "find_route" | "check_baggage_status" | "guide_verify_bag" | "get_flight_info" | "guide_live_flight_location" | "open_transit_hub" | "open_meal_delivery" | "open_emergency_contact" | "open_personal_guardian" | "open_translation" | "open_boarding_pass" | "open_profile" | "open_disability_assistance" | "airport_info" | "irrelevant" | "none",
   "action_payload": {
     "source": "string or null",
-    "destination": "string or null",
-    "event_name": "string or null",
-    "event_time": "string or null"
+    "destination": "string or null"
   },
   "general_reply": "Concise natural language answer for the user."
 }
@@ -508,15 +506,9 @@ export async function handleAuraChat(req: Request, res: Response) {
         {
           type: 'function',
           function: {
-            name: 'open_event_scheduler',
-            description: 'Open Event Scheduler screen for boarding alarms and reminders.',
-            parameters: {
-              type: 'object',
-              properties: {
-                event_name: { type: 'string', description: 'Name of the event' },
-                event_time: { type: 'string', description: 'Time of the event' },
-              },
-            },
+            name: 'open_disability_assistance',
+            description: 'Open Disability Assistance screen for wheelchair and staff companion support.',
+            parameters: { type: 'object', properties: {} },
           },
         },
       ],
@@ -663,12 +655,9 @@ export async function handleAuraChat(req: Request, res: Response) {
     } else if (calledTool === 'open_profile') {
       finalAction = { type: 'profile' };
       finalReply = "Your Passenger Profile has been opened.";
-    } else if (calledTool === 'open_event_scheduler') {
-      // OPEN_ONLY: Open Event Scheduler
-      const ename = toolArgs.event_name || parsedDecision.action_payload?.event_name;
-      const etime = toolArgs.event_time || parsedDecision.action_payload?.event_time;
-      finalAction = { type: 'event_scheduler', eventName: ename, eventTime: etime };
-      finalReply = "I've opened the Event Scheduler. Tap **Save Event** to confirm your reminder.";
+    } else if (calledTool === 'open_disability_assistance') {
+      finalAction = { type: 'disability_assistance' };
+      finalReply = "I've opened Disability Assistance. You can request wheelchair mobility or staff companion assistance.";
     }
 
     // ── 8. Reliable Intent Fallback & Protection ──────────────────────────────

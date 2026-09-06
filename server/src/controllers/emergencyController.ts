@@ -9,7 +9,7 @@ interface EmergencyAlertPayload {
   ticketId: string;
   emergencyType?: string;
   emergencyReason?: string;
-  category?: 'Police' | 'Medical' | 'Operations' | 'Fire';
+  category?: 'Police' | 'Medical' | 'Operations' | 'Fire' | 'Disability';
   primaryAgency?: string;
   additionalAgencies?: string[];
   priority?: 'CRITICAL' | 'HIGH' | 'MEDIUM';
@@ -18,6 +18,11 @@ interface EmergencyAlertPayload {
   accuracy?: number | null;
   terminal?: string;
   timestamp?: string;
+  assistanceType?: 'Wheelchair' | 'Staff Companion' | string;
+  pnr?: string;
+  flightDetails?: string;
+  senderDetails?: string;
+  requestDetails?: string;
 }
 
 interface ActiveAlertRecord {
@@ -137,13 +142,18 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
       accuracy,
       terminal = 'Terminal 3',
       timestamp,
+      assistanceType,
+      pnr,
+      flightDetails,
+      senderDetails,
+      requestDetails,
     } = req.body as EmergencyAlertPayload;
 
-    const reasonText = emergencyType || emergencyReason;
+    const reasonText = emergencyType || emergencyReason || assistanceType;
 
     if (!reasonText) {
       return res.status(400).json({
-        error: 'Missing required field: emergencyType/emergencyReason',
+        error: 'Missing required field: emergencyType/emergencyReason/assistanceType',
       });
     }
 
@@ -174,8 +184,13 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
     });
 
     const lowerReason = reasonText.toLowerCase();
+    const isDisability = !!assistanceType || lowerReason.includes('disability') || lowerReason.includes('wheelchair') || lowerReason.includes('companion');
 
-    if (lowerReason.includes('fire') || lowerReason.includes('gas') || lowerReason.includes('hazard') || lowerReason.includes('explosion')) {
+    if (isDisability) {
+      resolvedCategory = 'Disability';
+      resolvedPrimary = 'operations';
+      resolvedAdditional = [];
+    } else if (lowerReason.includes('fire') || lowerReason.includes('gas') || lowerReason.includes('hazard') || lowerReason.includes('explosion')) {
       resolvedCategory = 'Fire';
       resolvedPrimary = 'fire';
       resolvedAdditional = ['police', 'operations'];
@@ -183,7 +198,7 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
       resolvedCategory = 'Police';
       resolvedPrimary = 'police';
       resolvedAdditional = lowerReason.includes('missing') || lowerReason.includes('suspicious') ? ['operations'] : [];
-    } else if (lowerReason.includes('baggage') || lowerReason.includes('passport') || lowerReason.includes('wheelchair') || lowerReason.includes('elderly') || lowerReason.includes('help')) {
+    } else if (lowerReason.includes('baggage') || lowerReason.includes('passport') || lowerReason.includes('elderly') || lowerReason.includes('help')) {
       resolvedCategory = 'Operations';
       resolvedPrimary = 'operations';
       resolvedAdditional = lowerReason.includes('passport') ? ['police'] : [];
@@ -191,7 +206,9 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
 
     // Determine header template for Telegram
     let headerText = '🚨 <b>AIRPORT EMERGENCY ALERT</b>';
-    if (resolvedCategory === 'Medical') {
+    if (isDisability) {
+      headerText = '♿ <b>AIRPORT DISABILITY ASSISTANCE REQUEST</b>';
+    } else if (resolvedCategory === 'Medical') {
       headerText = '🚨 <b>AIRPORT MEDICAL EMERGENCY</b>';
     } else if (resolvedCategory === 'Police') {
       headerText = '🚨 <b>AIRPORT POLICE ALERT</b>';
@@ -216,7 +233,7 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
     const agencyLabelsMap: Record<string, string> = {
       police: 'Airport Police',
       medical: 'Airport Medical Team',
-      operations: 'Airport Operations / Support',
+      operations: 'Airport Passenger Assistance / Operations',
       fire: 'Fire & Rescue Team',
     };
 
@@ -226,7 +243,9 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
 
     // Facility info
     const facilityText =
-      resolvedCategory === 'Medical'
+      isDisability
+        ? 'Special Assistance Desk (60 m)'
+        : resolvedCategory === 'Medical'
         ? 'Medical Room A (180 m)'
         : resolvedCategory === 'Police'
         ? 'Police Desk T3 (120 m)'
@@ -234,23 +253,47 @@ export async function sendEmergencyAlert(req: Request, res: Response) {
         ? 'Fire Response Station #2 (250 m)'
         : 'Customer Service Counter B (90 m)';
 
-    const telegramMessage = [
-      headerText,
-      '',
-      `<b>Passenger Name:</b> ${passengerName}`,
-      `<b>Ticket ID:</b> ${ticketId}`,
-      `<b>Emergency Type:</b> ${reasonText}`,
-      `<b>Category:</b> ${resolvedCategory}`,
-      `<b>Responding Agencies:</b> ${agencyListText}`,
-      `<b>Current Location:</b> ${terminal}`,
-      `<b>Coordinates:</b> ${latitude}, ${longitude}`,
-      accuracy != null ? `<b>Accuracy:</b> ±${Math.round(accuracy)} m` : '',
-      `<b>Google Maps:</b> ${mapsLink}`,
-      `<b>Nearest Facility:</b> ${facilityText}`,
-      `<b>Time:</b> ${formattedTime}`,
-      '',
-      '⚠️ <b>Immediate assistance required.</b>',
-    ].filter(Boolean).join('\n');
+    const telegramMessage = isDisability
+      ? [
+          headerText,
+          '',
+          `<b>Assistance Type:</b> ${assistanceType || reasonText}`,
+          `<b>Passenger Name:</b> ${passengerName}`,
+          senderDetails ? `<b>Sender / User Details:</b> ${senderDetails}` : '',
+          pnr || ticketId ? `<b>PNR / Ticket ID:</b> ${pnr || ticketId}` : '',
+          flightDetails ? `<b>Flight Details:</b> ${flightDetails}` : '',
+          `<b>Category:</b> Disability Support & Special Assistance`,
+          `<b>Current Location:</b> ${terminal}`,
+          `<b>Coordinates:</b> ${latitude}, ${longitude}`,
+          accuracy != null ? `<b>Accuracy:</b> ±${Math.round(accuracy)} m` : '',
+          `<b>Google Maps:</b> ${mapsLink}`,
+          `<b>Nearest Facility:</b> ${facilityText}`,
+          `<b>Responding Team:</b> ${agencyListText}`,
+          `<b>Time:</b> ${formattedTime}`,
+          '',
+          `♿ <b>Request for disability assistance:</b> ${requestDetails || `Immediate staff dispatch requested for ${assistanceType || reasonText} at passenger location.`}`,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : [
+          headerText,
+          '',
+          `<b>Passenger Name:</b> ${passengerName}`,
+          `<b>Ticket ID:</b> ${ticketId}`,
+          `<b>Emergency Type:</b> ${reasonText}`,
+          `<b>Category:</b> ${resolvedCategory}`,
+          `<b>Responding Agencies:</b> ${agencyListText}`,
+          `<b>Current Location:</b> ${terminal}`,
+          `<b>Coordinates:</b> ${latitude}, ${longitude}`,
+          accuracy != null ? `<b>Accuracy:</b> ±${Math.round(accuracy)} m` : '',
+          `<b>Google Maps:</b> ${mapsLink}`,
+          `<b>Nearest Facility:</b> ${facilityText}`,
+          `<b>Time:</b> ${formattedTime}`,
+          '',
+          '⚠️ <b>Immediate assistance required.</b>',
+        ]
+          .filter(Boolean)
+          .join('\n');
 
     // Send via Telegram
     try {

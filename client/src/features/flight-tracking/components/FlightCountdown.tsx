@@ -3,15 +3,18 @@ import { Clock, Zap, ShieldCheck } from 'lucide-react'
 
 interface FlightCountdownProps {
   targetTime?: string | number
+  delayMinutes?: number
 }
 
-export default function FlightCountdown({ targetTime }: FlightCountdownProps) {
-  const defaultTarget = useState(() => Date.now() + (0 * 3600 + 42 * 60) * 1000)[0]
-  const targetMs = typeof targetTime === 'number'
-    ? targetTime
-    : targetTime
-    ? new Date(targetTime).getTime()
-    : defaultTarget
+export default function FlightCountdown({ targetTime, delayMinutes = 0 }: FlightCountdownProps) {
+  // Demo countdown starts at 35 minutes when the app is opened
+  const [initialBaseMs] = useState(() => Date.now() + 35 * 60 * 1000)
+  const targetMs =
+    (typeof targetTime === 'number'
+      ? targetTime
+      : targetTime
+      ? new Date(targetTime).getTime()
+      : initialBaseMs) + Math.max(0, delayMinutes) * 60 * 1000
 
   const [now, setNow] = useState(() => Date.now())
 

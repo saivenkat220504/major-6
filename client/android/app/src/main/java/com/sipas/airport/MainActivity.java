@@ -13,51 +13,67 @@ import android.Manifest;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
-    private static final String CHANNEL_ID = "flight_alerts_v2";
     private static final int REQUEST_NOTIFICATION_PERMISSION = 102;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Create the high-importance notification channel natively so it is
-        // ready before any FCM message arrives (even before JS initialises).
-        createFlightAlertChannel();
+        // Create notification channels natively before any FCM message arrives
+        createNotificationChannels();
 
         // Pre-emptively request runtime permissions
         requestRequiredPermissions();
     }
 
     /**
-     * Create the 'flight_alerts_v2' notification channel with IMPORTANCE_HIGH.
-     * Android only honours the importance / sound / vibration settings when the
-     * channel is FIRST created — the new channel ID ensures we bypass any
-     * previously-cached silent channel.
+     * Creates all notification channels the server may target.
+     * IMPORTANT: Android caches channel settings on first creation.
+     * Both v2 (legacy) and v3 (current server target) are created
+     * with IMPORTANCE_HIGH + strong vibration to guarantee delivery.
+     *
+     * Server currently sends to: flight_alerts_v3
+     * Vibration pattern: [wait, vibrate, pause, vibrate, pause, vibrate] ms
      */
-    private void createFlightAlertChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID,
-                "Flight Alerts",
-                NotificationManager.IMPORTANCE_HIGH   // Shows heads-up banner, plays sound, vibrates
-            );
-            channel.setDescription("Real-time gate and terminal change alerts for your flight");
-            channel.enableVibration(true);
-            channel.setVibrationPattern(new long[]{0, 300, 200, 300}); // Off/On/Off/On ms
-            channel.enableLights(true);
+    private void createNotificationChannels() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
 
-            // Attach default notification sound using AudioAttributes
-            AudioAttributes audioAttr = new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build();
-            channel.setSound(Settings.System.DEFAULT_NOTIFICATION_URI, audioAttr);
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
 
-            NotificationManager manager = getSystemService(NotificationManager.class);
-            if (manager != null) {
-                manager.createNotificationChannel(channel);
-            }
-        }
+        // Strong vibration pattern: 500ms on, 300ms off, repeated 3 times
+        long[] vibrationPattern = new long[]{0, 500, 300, 500, 300, 500};
+
+        AudioAttributes audioAttr = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build();
+
+        // ── Channel v3 (CURRENT — server sends here) ──────────────────────────
+        NotificationChannel channelV3 = new NotificationChannel(
+            "flight_alerts_v3",
+            "Flight & Baggage Alerts",
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        channelV3.setDescription("Real-time flight delay, gate change and baggage arrival alerts");
+        channelV3.enableVibration(true);
+        channelV3.setVibrationPattern(vibrationPattern);
+        channelV3.enableLights(true);
+        channelV3.setSound(Settings.System.DEFAULT_NOTIFICATION_URI, audioAttr);
+        manager.createNotificationChannel(channelV3);
+
+        // ── Channel v2 (LEGACY — kept for backward compatibility) ─────────────
+        NotificationChannel channelV2 = new NotificationChannel(
+            "flight_alerts_v2",
+            "Flight Alerts (Legacy)",
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        channelV2.setDescription("Legacy flight alert channel");
+        channelV2.enableVibration(true);
+        channelV2.setVibrationPattern(vibrationPattern);
+        channelV2.enableLights(true);
+        channelV2.setSound(Settings.System.DEFAULT_NOTIFICATION_URI, audioAttr);
+        manager.createNotificationChannel(channelV2);
     }
 
     /**

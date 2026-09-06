@@ -16,7 +16,7 @@ import LiveTrackingPage from '../../features/transit-services/pages/LiveTracking
 import HeathrowMapPage from '../../features/navigation/pages/HeathrowMapPage'
 import MealDeliveryPage from '../../features/meal-delivery/pages/MealDeliveryPage'
 import PersonalGuardianPage from '../../features/personal-guardian/pages/PersonalGuardianPage'
-import EventSchedulerPage from '../../features/event-scheduler/pages/EventSchedulerPage'
+import DisabilityAssistancePage from '../../features/disability-assistance/pages/DisabilityAssistancePage'
 
 import TicketScanPage from '../../features/boarding-pass/pages/TicketScanPage'
 
@@ -44,7 +44,7 @@ export default function AppRoutes(){
       <Route path='/heathrow-map' element={<HeathrowMapPage/>} />
       <Route path='/personal-guardian' element={<PersonalGuardianPage/>} />
       <Route path='/personal-mentor' element={<PersonalGuardianPage/>} />
-      <Route path='/event-scheduler' element={<EventSchedulerPage/>} />
+      <Route path='/disability-assistance' element={<DisabilityAssistancePage/>} />
     </Routes>
   )
 }
