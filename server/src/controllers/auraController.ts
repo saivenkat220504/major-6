@@ -135,7 +135,7 @@ AGENT AUTHORITY & PERMISSION MODEL
 
 1. AUTONOMOUS ACTIONS (Aura can execute directly):
    - "find_route": Route planning between source and destination inside the terminal. Extract the EXACT source and destination provided by the user (e.g. if the user says "entrance 10", extract source as "Entrance 10"). Do NOT substitute other locations (like "Main Entrance").
-   - "check_baggage_status": Retrieve real-time baggage status for all checked bags belonging to the passenger (Bag 1: Tag 176-8927361 Loaded onto Aircraft, Bag 2: Tag 176-8927362 Arrived at Belt 4).
+   - "check_baggage_status": Retrieve real-time baggage status for all checked bags belonging to the passenger (Bag 1: Tag 176-8927361 Arrived at Belt 4, Bag 2: Tag 176-8927362 Arrived at Belt 4). Always explicitly list both bags and their locations/statuses clearly.
    - "get_flight_info": Retrieve and provide passenger travel details (flight number, seat, gate, terminal, origin, destination, boarding countdown) directly from the scanned ticket data. ALWAYS call get_flight_info whenever the user asks about their flight number, seat, gate, terminal, destination, origin, ticket, or boarding info.
 
 2. GUIDED ACTIONS (Aura opens the feature and provides step-by-step guidance; Aura MUST NOT perform restricted actions):
@@ -145,7 +145,14 @@ AGENT AUTHORITY & PERMISSION MODEL
 3. OPEN_ONLY ACTIONS (Aura opens the module and instructs user what to select):
    - "open_transit_hub": For buses, trains, metros, taxis. Instruct user to select airport and mode of transport, then select Check Connectivity. DO NOT click buttons inside.
    - "open_meal_delivery": For food, drinks, restaurant browsing. Instruct user to choose a restaurant and proceed to food selection. DO NOT place orders or select restaurants.
-   - "open_emergency_contact": For emergencies, accidents, stalking, safety concerns, severe pain, medical alerts. Instruct user to select an emergency reason and click Broadcast. DO NOT click Broadcast or claim an alert was sent.
+   - "open_emergency_contact": For emergencies, accidents, safety concerns, severe pain, medical alerts, police, or misplaced baggage. Explain that the Emergency Contact page provides 3 options:
+       a) Medical Emergency (SOS button + Dial button)
+       b) Police (SOS button + Dial button)
+       c) Baggage Misplaced (Dial button)
+     Instruct the user about their 2 choices:
+       i) If they have a bit of time: click the Dial button to call the required service directly.
+       ii) If they have no time / urgent emergency: click the red SOS button so an instant GPS alert is broadcast to the required emergency response team.
+     DO NOT click the red SOS button or claim an alert was already sent.
    - "open_personal_guardian": For setting up travel alerts for trusted emergency contacts.
    - "open_translation": For real-time voice translation across languages.
    - "open_boarding_pass": For viewing digital boarding pass.
@@ -213,7 +220,7 @@ Assigned Seat: ${seat}
 Departure Gate: ${gate}
 Boarding Zone: ${zone}
 Boarding Time: ${boardingTime}
-Checked Bags: 2 (Bag 1: Tag 176-8927361, Bag 2: Tag 176-8927362)
+Checked Bags: 2 (Bag 1: Tag 176-8927361 - Arrived at Belt 4, Bag 2: Tag 176-8927362 - Arrived at Belt 4)
 ---------------------------------------`;
 }
 
@@ -363,14 +370,13 @@ export async function handleAuraChat(req: Request, res: Response) {
       data: { chatId: activeChatId, role: 'user', content: trimmedMsg },
     });
 
-    // ── 3. Build sliding window history (last 14 messages / 7 turns) ──────────
+    // ── 3. Build sliding window history (window size = 1 previous exchange / 2 messages max) ──
     const allMessages = await prisma.auraMessage.findMany({
       where: { chatId: activeChatId },
       orderBy: { timestamp: 'asc' },
     });
-
     const history = allMessages.slice(0, -1);
-    const slidingWindow = history.slice(-14);
+    const slidingWindow = history.slice(-2);
 
     // ── 4. Build Contexts ─────────────────────────────────────────────────────
     const passengerCtx = passenger && typeof passenger === 'object'
@@ -609,7 +615,7 @@ export async function handleAuraChat(req: Request, res: Response) {
     } else if (calledTool === 'check_baggage_status') {
       // AUTONOMOUS: Identify BOTH bags, report status, open Baggage Guidance
       finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
-      finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Loaded onto Aircraft (Cargo Hold)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
+      finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Arrived at Belt 4 (Arrival Hall A)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
     } else if (calledTool === 'guide_verify_bag') {
       // GUIDED: Explain arrival at belt and guide barcode verification
       finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
@@ -642,7 +648,7 @@ export async function handleAuraChat(req: Request, res: Response) {
     } else if (calledTool === 'open_emergency_contact') {
       // OPEN_ONLY: Open Emergency Contact, instruct user. DO NOT click broadcast.
       finalAction = { type: 'emergency_contact' };
-      finalReply = "Emergency Contact is open. Please select a valid reason for the emergency and click Broadcast. Your information will be forwarded to the concerned authorities.";
+      finalReply = "I have opened Emergency Contact. The page provides 3 options:\n• **Medical Emergency** (SOS button + Dial button)\n• **Police** (SOS button + Dial button)\n• **Baggage Misplaced** (Dial button)\n\n**You have 2 choices:**\n1. **If you have a bit of time:** Click the **Dial** button to call the required service directly.\n2. **If you have no time / urgent emergency:** Click the **red SOS** button to send an instant GPS alert to the emergency team.";
     } else if (calledTool === 'open_personal_guardian') {
       finalAction = { type: 'personal_guardian' };
       finalReply = "Personal Guardian is open. You can view or configure live travel status updates for your trusted emergency contacts.";
@@ -679,7 +685,7 @@ export async function handleAuraChat(req: Request, res: Response) {
       ) {
         finalAction = { type: 'emergency_contact' };
         if (!finalReply) {
-          finalReply = "Emergency Contact is open. Please select a valid reason for the emergency and click Broadcast. Your information will be forwarded to the concerned authorities.";
+          finalReply = "I have opened Emergency Contact. The page provides 3 options:\n• **Medical Emergency** (SOS button + Dial button)\n• **Police** (SOS button + Dial button)\n• **Baggage Misplaced** (Dial button)\n\n**You have 2 choices:**\n1. **If you have a bit of time:** Click the **Dial** button to call the required service directly.\n2. **If you have no time / urgent emergency:** Click the **red SOS** button to send an instant GPS alert to the emergency team.";
         }
       } else if (
         msgLower.includes('bag') ||
@@ -689,7 +695,7 @@ export async function handleAuraChat(req: Request, res: Response) {
       ) {
         finalAction = { type: 'baggage_guidance', autoCheckTag: 'ALL' };
         if (!finalReply) {
-          finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Loaded onto Aircraft (Cargo Hold)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
+          finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Arrived at Belt 4 (Arrival Hall A)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
         }
       } else if (
         msgLower.includes('live flight') ||
@@ -766,6 +772,13 @@ export async function handleAuraChat(req: Request, res: Response) {
       } else if (!finalReply) {
         finalReply = 'I am here to assist with your airport journey, navigation, flight information, baggage, transit, food, and emergency support.';
       }
+    }
+
+    // ── 8b. Strict Final Reply Normalization ──────────────────────────────────
+    if (finalAction?.type === 'emergency_contact') {
+      finalReply = "I have opened Emergency Contact. The page provides 3 options:\n• **Medical Emergency** (SOS button + Dial button)\n• **Police** (SOS button + Dial button)\n• **Baggage Misplaced** (Dial button)\n\n**You have 2 choices:**\n1. **If you have a bit of time:** Click the **Dial** button to call the required service directly.\n2. **If you have no time / urgent emergency:** Click the **red SOS** button to send an instant GPS alert to the emergency team.";
+    } else if (finalAction?.type === 'baggage_guidance' && calledTool !== 'guide_verify_bag' && !trimmedMsg.toLowerCase().includes('verify')) {
+      finalReply = "You have 2 checked bags:\n• **Bag 1 (Tag 176-8927361)**: Arrived at Belt 4 (Arrival Hall A)\n• **Bag 2 (Tag 176-8927362)**: Arrived at Belt 4 (Arrival Hall A)\n\nThe status for both bags has been displayed in Baggage Guidance.";
     }
 
     // ── 9. Persist Assistant Reply + update timestamp ─────────────────────────
